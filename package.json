@@ -5,7 +5,7 @@
   "engines": {
     "node": "24.x"
   },
-  "packageManager": "pnpm@11.24.0",
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "build": "pnpm --recursive --if-present build",
     "check": "pnpm --recursive --if-present check",

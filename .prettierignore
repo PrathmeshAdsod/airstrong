@@ -1,0 +1,11 @@
+.git/
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.lock
+.editorconfig
+.gitignore
+.node-version
+LICENSE
