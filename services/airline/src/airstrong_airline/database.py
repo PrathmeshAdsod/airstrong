@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -25,6 +26,14 @@ from .models import (
     PassengerParty,
     ScenarioResult,
     WorldSnapshot,
+)
+from .ranking import RANKING_VERSION
+from .recovery import (
+    CandidateEvaluation,
+    CandidatePlan,
+    action_payload,
+    snapshot_hash,
+    snapshot_payload,
 )
 from .validation import validate_world
 
@@ -683,3 +692,134 @@ def events_after(connection: DbConnection, world_id: UUID, sequence: int = 0) ->
         }
         for row in rows
     ]
+
+
+def persist_recovery_batch(
+    connection: DbConnection,
+    snapshot: WorldSnapshot,
+    candidates: tuple[CandidatePlan, ...],
+    evaluations: tuple[CandidateEvaluation, ...],
+    ranked: tuple[CandidateEvaluation, ...],
+) -> UUID:
+    if not candidates:
+        raise ValueError("Cannot persist an empty recovery batch")
+    digest = snapshot_hash(snapshot)
+    candidate_ids = {candidate.candidate_id for candidate in candidates}
+    evaluation_ids = {evaluation.candidate_id for evaluation in evaluations}
+    ranked_ids = [evaluation.candidate_id for evaluation in ranked]
+    if evaluation_ids != candidate_ids:
+        raise ValueError("Every candidate must have exactly one evaluation")
+    if any(candidate.snapshot_hash != digest for candidate in candidates):
+        raise ValueError("Candidate snapshot hash does not match the authoritative snapshot")
+    if any(evaluation.snapshot_hash != digest for evaluation in evaluations):
+        raise ValueError("Evaluation snapshot hash does not match the authoritative snapshot")
+    if set(ranked_ids) != {evaluation.candidate_id for evaluation in evaluations if evaluation.valid}:
+        raise ValueError("Ranked results must contain every valid candidate and no invalid candidate")
+    artifact_hashes = {candidate.artifact_hash for candidate in candidates}
+    if len(artifact_hashes) != 1:
+        raise ValueError("A recovery batch must come from one generated artifact")
+    artifact_hash = next(iter(artifact_hashes))
+    batch_name = f"{snapshot.revision}:{artifact_hash}:{':'.join(sorted(candidate_ids))}"
+    batch_id = uuid5(snapshot.world_id, batch_name)
+    rank_by_candidate = {candidate_id: index for index, candidate_id in enumerate(ranked_ids, start=1)}
+    evaluation_by_candidate = {evaluation.candidate_id: evaluation for evaluation in evaluations}
+
+    with connection.transaction():
+        existing_batch = connection.execute(
+            "SELECT 1 FROM airline_recovery_batches WHERE batch_id = %s",
+            (batch_id,),
+        ).fetchone()
+        if existing_batch is not None:
+            return batch_id
+        connection.execute(
+            """
+            INSERT INTO airline_recovery_snapshots(snapshot_hash, world_id, world_revision, payload)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (snapshot_hash) DO NOTHING
+            """,
+            (digest, snapshot.world_id, snapshot.revision, Jsonb(snapshot_payload(snapshot))),
+        )
+        connection.execute(
+            """
+            INSERT INTO airline_recovery_batches(
+                batch_id, world_id, world_revision, snapshot_hash, artifact_hash, ranking_version
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (batch_id) DO NOTHING
+            """,
+            (
+                batch_id,
+                snapshot.world_id,
+                snapshot.revision,
+                digest,
+                artifact_hash,
+                RANKING_VERSION,
+            ),
+        )
+        for candidate in candidates:
+            connection.execute(
+                """
+                INSERT INTO airline_recovery_candidates(
+                    candidate_id, batch_id, world_id, world_revision, snapshot_hash,
+                    artifact_hash, strategy_parameters, actions, solver_version,
+                    solver_status, objective_value
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (candidate_id) DO NOTHING
+                """,
+                (
+                    candidate.candidate_id,
+                    batch_id,
+                    snapshot.world_id,
+                    snapshot.revision,
+                    digest,
+                    candidate.artifact_hash,
+                    Jsonb(asdict(candidate.strategy)),
+                    Jsonb([action_payload(action) for action in candidate.actions]),
+                    candidate.solver_version,
+                    candidate.solver_status,
+                    candidate.objective_value,
+                ),
+            )
+            evaluation = evaluation_by_candidate[candidate.candidate_id]
+            rank = rank_by_candidate.get(candidate.candidate_id)
+            connection.execute(
+                """
+                INSERT INTO airline_candidate_evaluations(
+                    candidate_id, simulator_version, valid, metrics, violations,
+                    rank, recommended
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (candidate_id) DO UPDATE SET
+                    simulator_version = EXCLUDED.simulator_version,
+                    valid = EXCLUDED.valid,
+                    metrics = EXCLUDED.metrics,
+                    violations = EXCLUDED.violations,
+                    rank = EXCLUDED.rank,
+                    recommended = EXCLUDED.recommended,
+                    evaluated_at = now()
+                """,
+                (
+                    candidate.candidate_id,
+                    evaluation.simulator_version,
+                    evaluation.valid,
+                    Jsonb(asdict(evaluation.metrics)),
+                    Jsonb([asdict(violation) for violation in evaluation.violations]),
+                    rank,
+                    rank == 1,
+                ),
+            )
+        _append_event(
+            connection,
+            snapshot.world_id,
+            "recovery.candidates_evaluated",
+            snapshot.revision,
+            {
+                "batchId": str(batch_id),
+                "candidateCount": len(candidates),
+                "validCandidateCount": len(ranked),
+                "recommendedCandidateId": ranked[0].candidate_id if ranked else None,
+                "snapshotHash": digest,
+                "artifactHash": artifact_hash,
+                "simulatorVersion": evaluations[0].simulator_version,
+                "rankingVersion": RANKING_VERSION,
+            },
+        )
+    return batch_id

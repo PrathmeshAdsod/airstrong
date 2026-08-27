@@ -34,6 +34,8 @@ Airstrong runtime
 
 Generated code may call checked-in trusted solver primitives, but it never writes to the live airline state. Plan letters are presentation labels assigned only after candidates have been stored and ranked. They have no strategy or outcome semantics.
 
+Candidate generation, authoritative validation, and the versioned lexicographic objective are specified in [recovery-objective.md](recovery-objective.md). Solver weights create proposal diversity; they never replace the twin or select the recommendation.
+
 ## Safe usage controls
 
 These controls preserve the approved architecture:
