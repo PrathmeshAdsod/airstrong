@@ -21,6 +21,7 @@ __pycache__/
 *.sqlite
 *.sqlite3
 *.log
+*.tsbuildinfo
 
 .vercel/
 .railway/
@@ -32,4 +33,3 @@ test-results/
 
 .DS_Store
 Thumbs.db
-
