@@ -44,6 +44,20 @@ uv run pytest
 
 The integration tests create isolated worlds, perform the real hero mutation, verify database-sensitive dependency propagation, replay requests with the same idempotency key, reset the world, and remove their test worlds.
 
+Run the authoritative airline REST, SSE, and MCP service in Docker/Linux:
+
+```powershell
+docker compose -f docker-compose.airline.yml up --build -d
+```
+
+The service is available only on localhost during development:
+
+- health: `http://127.0.0.1:4200/health`
+- REST default world: `http://127.0.0.1:4200/api/worlds/default`
+- Streamable HTTP MCP: `http://127.0.0.1:4200/mcp`
+
+World events are written to PostgreSQL with an increasing per-world sequence. The SSE endpoint at `/api/worlds/{worldId}/events` replays after either the `after` query parameter or `Last-Event-ID`, then uses PostgreSQL notifications instead of frontend polling.
+
 Secrets will be documented when their integrations land. Do not commit `.env` files, model keys, Daytona keys, database URLs, or generated run artifacts.
 
 ## Live sponsor-stack compatibility gate
