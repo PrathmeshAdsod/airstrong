@@ -14,6 +14,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "check": "npm run check --workspaces --if-present",
+    "compatibility:prove": "npm run compatibility:prove --workspace @airstrong/agent-runtime",
+    "compatibility:verify-persistence": "npm run compatibility:verify-persistence --workspace @airstrong/agent-runtime",
     "dev": "npm run dev --workspace @airstrong/web",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

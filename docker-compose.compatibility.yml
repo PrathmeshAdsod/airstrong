@@ -1,0 +1,98 @@
+name: airstrong-compatibility
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_DB: airstrong
+      POSTGRES_PASSWORD: local-airstrong-only
+      POSTGRES_USER: airstrong
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - airstrong-compat-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airstrong -d airstrong"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  compatibility-mcp:
+    build:
+      context: ./services/compatibility-mcp
+    environment:
+      AIRSTRONG_DATABASE_URL: postgresql://airstrong:local-airstrong-only@postgres:5432/airstrong
+      AIRSTRONG_MCP_PORT: 4100
+    ports:
+      - "127.0.0.1:4100:4100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4100/health', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  trueforge:
+    build:
+      context: ./infra/trueforge
+      args:
+        TRUEFORGE_VERSION: 0.1.4
+    environment:
+      HOST: 0.0.0.0
+      MODEL_CATALOG_PATH: /app/catalog/model-catalog.yaml
+      NODE_ENV: production
+      PORT: 8790
+      POSTGRES_DB: airstrong
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: local-airstrong-only
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: airstrong
+      PUBLIC_BASE_URL: http://localhost:8790
+      REDIS_URL: redis://redis:6379
+      SANDBOX_CATALOG_PATH: /app/catalog/sandbox-catalog.yaml
+      STANDALONE: "false"
+    ports:
+      - "127.0.0.1:8790:8790"
+    volumes:
+      - ./infra/trueforge/model-catalog.yaml:/app/catalog/model-catalog.yaml:ro
+      - ./infra/trueforge/sandbox-catalog.yaml:/app/catalog/sandbox-catalog.yaml:ro
+    depends_on:
+      compatibility-mcp:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8790/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+volumes:
+  airstrong-compat-postgres:

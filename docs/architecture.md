@@ -70,3 +70,9 @@ The following are unapproved hypotheses until that gate is complete:
 - assuming Railway Serverless can sleep while the actual runtime and connection pools are active.
 
 If a critical component cannot run reliably within a free allowance, Airstrong will report the minimum expected cost before a paid service is enabled. It will not replace real execution with fixtures or scripted outcomes.
+
+## Foundation compatibility boundary
+
+PR1 includes an isolated sponsor-stack compatibility service. It performs a real PostgreSQL read and an idempotent write, but contains no airline recovery logic and cannot be used as a production fallback. Its only purpose is to fail closed unless TrueForge, Gemini, MCP, dynamic subagents, Daytona Code Mode, approval events, durable SSE resume, and persisted sessions work together on Linux.
+
+The checked-in `model-catalog.yaml` adds the officially verified `gemini-3.5-flash-lite` identifier because TrueForge 0.1.4's shipped catalog predates that stable entry. It uses TrueForge's supported catalog override and does not modify TrueForge source.
