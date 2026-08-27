@@ -760,8 +760,11 @@ svg {
   display: flex;
   gap: 30px;
   margin-top: 54px;
+  margin-bottom: 0;
   overflow-x: auto;
   border-bottom: 1px solid var(--line);
+  padding-left: 0;
+  list-style: none;
   scrollbar-width: none;
 }
 
@@ -769,7 +772,7 @@ svg {
   display: none;
 }
 
-.data-section-list span {
+.data-section-list li {
   position: relative;
   flex: none;
   color: var(--muted);
@@ -778,11 +781,11 @@ svg {
   font-weight: 630;
 }
 
-.data-section-list span.is-selected {
+.data-section-list li.is-selected {
   color: var(--blue);
 }
 
-.data-section-list span.is-selected::after {
+.data-section-list li.is-selected::after {
   position: absolute;
   right: 0;
   bottom: -1px;

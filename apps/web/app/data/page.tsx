@@ -15,16 +15,13 @@ export default function DataPage() {
         title="Data"
         description="The fictional operational world, exposed clearly and read directly from the airline service."
       />
-      <div className="data-section-list" aria-label="Operational data sections">
+      <ul className="data-section-list" aria-label="Operational data sections">
         {dataSections.map((section, index) => (
-          <span
-            key={section}
-            className={index === 0 ? "is-selected" : undefined}
-          >
+          <li key={section} className={index === 0 ? "is-selected" : undefined}>
             {section}
-          </span>
+          </li>
         ))}
-      </div>
+      </ul>
       <FoundationState
         index="03"
         title="No authoritative rows are connected"
