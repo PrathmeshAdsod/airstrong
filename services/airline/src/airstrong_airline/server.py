@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict
 from typing import Annotated, Any
@@ -15,6 +16,7 @@ from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from .artifacts import evaluate_generated_candidates, solver_bundle, validated_candidates
 from .database import (
     DbConnection,
     DbRow,
@@ -22,11 +24,16 @@ from .database import (
     create_world_once,
     default_world,
     events_after,
+    load_snapshot,
     load_world,
     migrate,
+    persist_generated_artifact,
+    persist_recovery_batch,
+    recovery_batch_by_id,
     reset_world,
     trigger_hero_scenario,
 )
+from .recovery import snapshot_hash
 from .views import (
     aircraft_investigation,
     crew_investigation,
@@ -132,6 +139,12 @@ def airline_recovery_candidates(
     return {"batch": result}
 
 
+@mcp.tool(annotations=READ_ONLY)
+def airline_solver_bundle() -> dict[str, Any]:
+    """Return the hashed trusted solver library used by runtime-generated Daytona code."""
+    return solver_bundle()
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     try:
@@ -217,6 +230,76 @@ async def get_recovery(request: Request) -> JSONResponse:
     try:
         result = _with_database(recovery_batch_view, request.path_params["world_id"])
         return JSONResponse({"batch": result})
+    except Exception as error:
+        return _error_response(error)
+
+
+def _authorized_runtime(request: Request) -> bool:
+    expected = os.getenv("AIRSTRONG_RUNTIME_TOKEN", "").strip()
+    supplied = request.headers.get("Authorization", "")
+    return bool(expected) and secrets.compare_digest(supplied, f"Bearer {expected}")
+
+
+@mcp.custom_route("/api/worlds/{world_id}/recovery/evaluate", methods=["POST"])
+async def post_recovery_evaluate(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        world_id = _world_id(request.path_params["world_id"])
+        body = await request.json()
+        source = str(body["source"])
+        sandbox_result = body["sandboxResult"]
+        expected_revision = int(body["expectedWorldRevision"])
+        expected_snapshot_hash = str(body["expectedSnapshotHash"])
+        with connect(_database_url()) as connection, connection.transaction():
+            world = connection.execute(
+                "SELECT revision FROM airline_worlds WHERE world_id = %s FOR UPDATE",
+                (world_id,),
+            ).fetchone()
+            if world is None:
+                raise KeyError(f"Unknown world {world_id}")
+            if world["revision"] != expected_revision:
+                raise ValueError("World revision changed while recovery computation was running")
+            snapshot = load_snapshot(connection, world_id)
+            if snapshot_hash(snapshot) != expected_snapshot_hash:
+                raise ValueError("World snapshot changed while recovery computation was running")
+            trusted_bundle_hash = str(solver_bundle()["bundleHash"])
+            if sandbox_result.get("bundleHash") != trusted_bundle_hash:
+                raise ValueError("Sandbox solver bundle does not match the trusted bundle")
+            artifact_hash = persist_generated_artifact(
+                connection,
+                snapshot,
+                source=source,
+                sandbox_stdout=sandbox_result,
+                trueforge_session_id=str(body["trueforgeSessionId"]),
+                trueforge_turn_id=str(body["trueforgeTurnId"]),
+                sandbox_id=str(body["sandboxId"]),
+            )
+            if sandbox_result.get("artifactHash") != artifact_hash:
+                raise ValueError("Sandbox artifact hash does not match submitted source")
+            candidates = validated_candidates(
+                snapshot,
+                list(sandbox_result["candidates"]),
+                artifact_hash=artifact_hash,
+            )
+            evaluations, ranked = evaluate_generated_candidates(snapshot, candidates)
+            batch_id = persist_recovery_batch(connection, snapshot, candidates, evaluations, ranked)
+            batch = recovery_batch_by_id(connection, world_id, batch_id)
+            if batch is None:
+                raise RuntimeError("Persisted recovery batch could not be read")
+            return JSONResponse(
+                {
+                    "batchId": str(batch_id),
+                    "batch": public_value(batch),
+                    "lineage": {
+                        "artifactHash": artifact_hash,
+                        "trueforgeSessionId": str(body["trueforgeSessionId"]),
+                        "trueforgeTurnId": str(body["trueforgeTurnId"]),
+                        "sandboxId": str(body["sandboxId"]),
+                    },
+                },
+                status_code=201,
+            )
     except Exception as error:
         return _error_response(error)
 

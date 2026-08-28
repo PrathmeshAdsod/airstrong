@@ -29,6 +29,19 @@ class StrategyParameters:
     def validate(self) -> None:
         if not self.strategy_id.strip():
             raise ValueError("strategy_id is required")
+        integer_values = (
+            self.max_cancellations,
+            self.max_delay_minutes,
+            self.cancellation_weight,
+            self.passenger_preservation_weight,
+            self.delay_weight,
+            self.aircraft_reassignment_weight,
+            self.stabilization_weight,
+        )
+        if any(type(value) is not int for value in integer_values):
+            raise ValueError("strategy counts, limits, and weights must be integers")
+        if type(self.allow_aircraft_substitution) is not bool:
+            raise ValueError("allow_aircraft_substitution must be a boolean")
         if self.max_cancellations < 0:
             raise ValueError("max_cancellations cannot be negative")
         if self.max_delay_minutes < 0 or self.max_delay_minutes % 15:
@@ -144,6 +157,7 @@ def candidate_content_hash(
     strategy: StrategyParameters,
     snapshot_digest: str,
     artifact_hash: str,
+    scope_flight_ids: tuple[str, ...],
     actions: tuple[RecoveryAction, ...],
 ) -> str:
     body = {
@@ -151,6 +165,7 @@ def candidate_content_hash(
         "snapshotHash": snapshot_digest,
         "artifactHash": artifact_hash,
         "solverVersion": SOLVER_PRIMITIVES_VERSION,
+        "scopeFlightIds": list(scope_flight_ids),
         "actions": [action_payload(action) for action in actions],
     }
     return hashlib.sha256(canonical_json(body).encode()).hexdigest()

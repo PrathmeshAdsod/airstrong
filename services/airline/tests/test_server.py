@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import socket
@@ -17,8 +18,12 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from airstrong_airline.database import DbConnection, connect, migrate
+from airstrong_airline.artifacts import solver_bundle
+from airstrong_airline.database import DbConnection, connect, load_impacts, load_snapshot, migrate
+from airstrong_airline.recovery import StrategyParameters, snapshot_hash
+from airstrong_airline.sandbox_runtime import candidate_payload
 from airstrong_airline.server import _with_database, initialize_database, mcp
+from airstrong_airline.solver_primitives import generate_candidates
 
 DATABASE_URL = os.getenv("AIRSTRONG_TEST_DATABASE_URL")
 pytestmark = pytest.mark.integration
@@ -29,6 +34,7 @@ def running_server() -> Iterator[str]:
     if not DATABASE_URL:
         pytest.skip("AIRSTRONG_TEST_DATABASE_URL is not configured")
     os.environ["AIRSTRONG_DATABASE_URL"] = DATABASE_URL
+    os.environ["AIRSTRONG_RUNTIME_TOKEN"] = "test-runtime-token"
     initialize_database()
     app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
@@ -249,7 +255,88 @@ def test_remote_mcp_discovers_and_calls_real_airline_tools(api_world: tuple[str,
         "airline_crew_investigation",
         "airline_passenger_investigation",
         "airline_recovery_candidates",
+        "airline_solver_bundle",
         "airline_world_snapshot",
     ]
     assert payload["worldRevision"] == 1
     assert payload["unavailableAircraft"]
+
+
+def test_runtime_artifact_is_verified_then_authoritative_twin_ranks(
+    api_world: tuple[str, UUID],
+) -> None:
+    server_url, world_id = api_world
+    with httpx.Client(base_url=server_url, timeout=10) as client:
+        client.post(
+            f"/api/worlds/{world_id}/scenarios/hero",
+            headers={"Idempotency-Key": "hero-artifact-once"},
+        ).raise_for_status()
+
+    source = "# runtime-generated test artifact\nprint('solver')\n"
+    artifact_hash = hashlib.sha256(source.encode()).hexdigest()
+    with connect(DATABASE_URL) as connection:
+        snapshot = load_snapshot(connection, world_id)
+        scope = tuple(
+            sorted(
+                item.entity_id
+                for item in load_impacts(connection, world_id, revision=snapshot.revision)
+                if item.entity_type == "flight"
+            )
+        )
+    strategies = (
+        StrategyParameters("generated-01", 0, 120, True, 1000, 100, 5, 1, 1),
+        StrategyParameters("generated-02", 0, 540, False, 1000, 100, 1, 100, 1),
+        StrategyParameters("generated-03", 6, 120, False, 1, 0, 100, 100, 10),
+    )
+    candidates = generate_candidates(snapshot, scope, strategies, artifact_hash=artifact_hash)
+    sandbox_result = {
+        "artifactHash": artifact_hash,
+        "bundleHash": solver_bundle()["bundleHash"],
+        "candidates": [candidate_payload(candidate) for candidate in candidates],
+    }
+
+    with httpx.Client(base_url=server_url, timeout=10) as client:
+        unauthorized = client.post(
+            f"/api/worlds/{world_id}/recovery/evaluate",
+            json={},
+        )
+        response = client.post(
+            f"/api/worlds/{world_id}/recovery/evaluate",
+            headers={"Authorization": "Bearer test-runtime-token"},
+            json={
+                "source": source,
+                "sandboxResult": sandbox_result,
+                "trueforgeSessionId": "session-test",
+                "trueforgeTurnId": "turn-test",
+                "sandboxId": "sandbox-test",
+                "expectedWorldRevision": snapshot.revision,
+                "expectedSnapshotHash": snapshot_hash(snapshot),
+            },
+        )
+        malformed_result = json.loads(json.dumps(sandbox_result))
+        malformed_result["candidates"][0]["objectiveValue"] = 1.5
+        malformed = client.post(
+            f"/api/worlds/{world_id}/recovery/evaluate",
+            headers={"Authorization": "Bearer test-runtime-token"},
+            json={
+                "source": source,
+                "sandboxResult": malformed_result,
+                "trueforgeSessionId": "session-malformed",
+                "trueforgeTurnId": "turn-malformed",
+                "sandboxId": "sandbox-malformed",
+                "expectedWorldRevision": snapshot.revision,
+                "expectedSnapshotHash": snapshot_hash(snapshot),
+            },
+        )
+
+    assert unauthorized.status_code == 401
+    assert malformed.status_code == 409
+    assert "objectiveValue must be an integer" in malformed.text
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["lineage"]["artifactHash"] == artifact_hash
+    assert len(body["batch"]["candidates"]) == 3
+    valid = [item for item in body["batch"]["candidates"] if item["valid"]]
+    recommended = [item for item in body["batch"]["candidates"] if item["recommended"]]
+    assert len(recommended) <= 1
+    assert not recommended or recommended[0] in valid

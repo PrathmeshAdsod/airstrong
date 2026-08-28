@@ -243,6 +243,7 @@ def solve_candidate(
         strategy=strategy,
         snapshot_digest=digest,
         artifact_hash=artifact_hash,
+        scope_flight_ids=scope,
         actions=ordered_actions,
     )
     return CandidatePlan(

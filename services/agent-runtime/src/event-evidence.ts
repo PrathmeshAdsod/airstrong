@@ -27,7 +27,9 @@ function parsedArguments(
   }
 }
 
-function isGeneratedPythonExecution(call: TrueForgeApi.ToolCall): boolean {
+export function isGeneratedPythonExecution(
+  call: TrueForgeApi.ToolCall,
+): boolean {
   const command = parsedArguments(call)?.command;
   return (
     typeof command === "string" &&
