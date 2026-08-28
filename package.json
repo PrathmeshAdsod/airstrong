@@ -21,6 +21,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "npm run lint --workspaces --if-present",
+    "model:evaluate": "npm run recovery:evaluate --workspace @airstrong/agent-runtime --",
+    "release:smoke": "node scripts/release-smoke.mjs",
     "recovery:run": "npm run recovery:run --workspace @airstrong/agent-runtime --",
     "recovery:decide": "npm run recovery:decide --workspace @airstrong/agent-runtime --",
     "test": "npm run test --workspaces --if-present",
