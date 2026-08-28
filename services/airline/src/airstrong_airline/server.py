@@ -64,6 +64,7 @@ READ_ONLY = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
+EVENT_CATCHUP_SECONDS = 15
 CONSEQUENTIAL = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=True,
@@ -613,20 +614,26 @@ async def _event_stream(world_id: UUID, after: int, *, follow: bool) -> AsyncIte
             yield _sse_event(event)
         if not follow:
             return
+        # Flush the response immediately even when the durable cursor is current.
+        # Without an initial frame, browsers remain in CONNECTING until the first
+        # notification or keepalive interval elapses.
+        yield ": connected\n\n"
         while True:
-            received = False
-            async for notification in connection.notifies(timeout=15, stop_after=1):
-                received = True
+            async for notification in connection.notifies(
+                timeout=EVENT_CATCHUP_SECONDS,
+                stop_after=1,
+            ):
                 try:
                     notice = json.loads(notification.payload)
                 except json.JSONDecodeError:
                     continue
                 if notice.get("worldId") != str(world_id):
                     continue
-                for event in await _async_events_after(connection, world_id, cursor):
-                    cursor = event["sequence"]
-                    yield _sse_event(event)
-            if not received:
+            pending = await _async_events_after(connection, world_id, cursor)
+            for event in pending:
+                cursor = event["sequence"]
+                yield _sse_event(event)
+            if not pending:
                 yield ": keepalive\n\n"
 
 

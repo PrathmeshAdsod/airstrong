@@ -18,6 +18,7 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+import airstrong_airline.server as airline_server
 from airstrong_airline.artifacts import solver_bundle
 from airstrong_airline.database import DbConnection, connect, load_impacts, load_snapshot, migrate
 from airstrong_airline.recovery import StrategyParameters, snapshot_hash
@@ -241,6 +242,56 @@ def test_sse_pushes_postgres_notifications_without_frontend_polling(api_world: t
             if received_ids == [2, 3]:
                 break
     assert received_ids == [2, 3]
+
+
+def test_sse_connects_immediately_when_the_cursor_is_current(
+    api_world: tuple[str, UUID],
+) -> None:
+    server_url, world_id = api_world
+    with (
+        httpx.Client(base_url=server_url, timeout=2) as client,
+        client.stream("GET", f"/api/worlds/{world_id}/events?after=1") as response,
+    ):
+        response.raise_for_status()
+        first_line = next(response.iter_lines())
+
+    assert first_line == ": connected"
+
+
+def test_sse_catches_up_from_durable_sequence_when_notification_is_missed(
+    api_world: tuple[str, UUID], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server_url, world_id = api_world
+    monkeypatch.setattr(airline_server, "EVENT_CATCHUP_SECONDS", 0.1)
+    received_ids: list[int] = []
+    with (
+        httpx.Client(base_url=server_url, timeout=3) as stream_client,
+        stream_client.stream("GET", f"/api/worlds/{world_id}/events?after=1") as response,
+    ):
+        response.raise_for_status()
+        with connect(DATABASE_URL) as connection, connection.transaction():
+            sequence = connection.execute(
+                """
+                UPDATE airline_worlds
+                SET next_event_sequence = next_event_sequence + 1
+                WHERE world_id = %s
+                RETURNING next_event_sequence - 1 AS sequence
+                """,
+                (world_id,),
+            ).fetchone()["sequence"]
+            connection.execute(
+                """
+                INSERT INTO airline_world_events(
+                    world_id, sequence, event_type, world_revision, payload
+                ) VALUES (%s, %s, 'world.recalculated', 0, %s::jsonb)
+                """,
+                (world_id, sequence, json.dumps({"source": "durable-catchup-test"})),
+            )
+        for line in response.iter_lines():
+            if line.startswith("id: "):
+                received_ids.append(int(line.removeprefix("id: ")))
+                break
+    assert received_ids == [2]
 
 
 async def _remote_mcp_probe(server_url: str, world_id: UUID) -> tuple[list[str], dict]:

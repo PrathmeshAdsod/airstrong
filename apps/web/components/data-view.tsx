@@ -71,11 +71,12 @@ function displayValue(value: unknown, key?: string): string {
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (typeof value === "number") return String(value);
   if (typeof value === "string") {
+    const normalizedKey = key?.toLowerCase();
     if (
-      key?.endsWith("At") ||
-      key?.includes("Departure") ||
-      key?.includes("Arrival") ||
-      key?.includes("duty")
+      normalizedKey?.endsWith("at") ||
+      normalizedKey?.includes("departure") ||
+      normalizedKey?.includes("arrival") ||
+      normalizedKey?.includes("duty")
     ) {
       const parsed = Date.parse(value);
       if (!Number.isNaN(parsed)) return formatClock(value);

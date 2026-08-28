@@ -244,8 +244,10 @@ export async function apiJson<T>(
 
 export function humanize(value: string): string {
   return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replaceAll("_", " ")
-    .replace(/\b\w/g, (character) => character.toUpperCase());
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+    .replace(/\bId\b/g, "ID");
 }
 
 export function shortId(value: string | null | undefined): string {

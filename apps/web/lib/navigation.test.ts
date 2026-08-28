@@ -5,6 +5,7 @@ import {
   dashboardNavigation,
   dataSections,
   landingNavigation,
+  githubUrl,
 } from "./navigation.ts";
 
 describe("locked information architecture", () => {
@@ -22,6 +23,7 @@ describe("locked information architecture", () => {
       landingNavigation.map((item) => item.label),
       ["How it works", "Scenarios"],
     );
+    assert.equal(githubUrl, "https://github.com/PrathmeshAdsod/airstrong");
   });
 
   it("exposes every authoritative data section", () => {

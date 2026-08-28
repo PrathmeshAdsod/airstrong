@@ -20,4 +20,5 @@ export const dataSections = [
 ] as const;
 
 export const githubUrl =
-  process.env.NEXT_PUBLIC_GITHUB_URL ?? "https://github.com/PrathmeshAdsod";
+  process.env.NEXT_PUBLIC_GITHUB_URL ??
+  "https://github.com/PrathmeshAdsod/airstrong";
