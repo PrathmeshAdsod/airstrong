@@ -35,6 +35,25 @@ void test("recovery evidence requires real grounded subagents and a self-hashed 
         ({
           type: "thread.created",
           threadId,
+          agentInfo: {
+            input: "Investigate",
+            name:
+              threadId === "aircraft-thread"
+                ? "Aircraft"
+                : threadId === "crew-thread"
+                  ? "Crew"
+                  : "Passenger",
+            type: "dynamic",
+          },
+          parent: {
+            threadId: "main",
+            toolCallId:
+              threadId === "aircraft-thread"
+                ? "sub-1"
+                : threadId === "crew-thread"
+                  ? "sub-2"
+                  : "sub-3",
+          },
         }) as TrueForgeApi.ThreadCreatedEvent,
     ),
     {
@@ -73,6 +92,8 @@ void test("recovery evidence requires real grounded subagents and a self-hashed 
             artifactHash,
             artifactSourceBase64: Buffer.from(source).toString("base64"),
             candidates: [{}, {}, {}],
+            snapshotHash: "a".repeat(64),
+            worldRevision: 1,
           })}\n`,
         },
       }),
@@ -85,4 +106,16 @@ void test("recovery evidence requires real grounded subagents and a self-hashed 
   assert.equal(evidence.sandboxId, "sandbox-real");
   assert.equal(evidence.subagentThreadIds.length, 3);
   assert.equal(evidence.sandboxResult.candidates.length, 3);
+
+  const aircraftMessage = events.find(
+    (event): event is TrueForgeApi.ModelMessageEvent =>
+      event.type === "model.message" && event.threadId === "aircraft-thread",
+  )!;
+  aircraftMessage.toolCalls = [
+    call("read-wrong", "airline_crew_investigation", {}),
+  ];
+  assert.throws(
+    () => analyzeRecoveryEvidence(events, { requireSubagents: true }),
+    /grounded MCP read/,
+  );
 });

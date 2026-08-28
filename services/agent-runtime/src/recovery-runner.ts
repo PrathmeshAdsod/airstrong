@@ -132,7 +132,7 @@ Follow this exact workflow:
    - define the six incident-specific strategy dictionaries in the generated source using the trusted StrategyParameters field names;
    - hash its own exact source bytes with SHA-256;
    - import solve_recovery_problem from airstrong_airline.sandbox_runtime and execute the real OR-Tools-backed trusted primitives;
-   - set solve_result = solve_recovery_problem(snapshot, scope_flight_ids, strategies, artifact_hash), then print exactly one final line beginning AIRSTRONG_RESULT= followed by compact JSON with artifactHash, artifactSourceBase64, and candidates set to solve_result["candidates"] (the candidates field must be an array, not the solve_result object).
+   - set solve_result = solve_recovery_problem(snapshot, scope_flight_ids, strategies, artifact_hash), then print exactly one final line beginning AIRSTRONG_RESULT= followed by compact JSON with artifactHash, artifactSourceBase64, snapshotHash set to every candidate's identical snapshotHash, worldRevision set to snapshot["worldRevision"], and candidates set to solve_result["candidates"] (the candidates field must be an array, not the solve_result object).
    call_tool is async and must be awaited with body={}. Add generated_lib to sys.path before importing the trusted runtime. Use this exact positional call: solve_recovery_problem(snapshot, scope_flight_ids, strategies, artifact_hash). Use asyncio.run(main()).
 5. A single repair exec of recovery_problem.py is allowed only if that complete execution fails. After success, stop. Do not call airline_recovery_candidates, rank candidates, call recovery writes, request approval, or claim a winner.`;
 }
@@ -172,6 +172,8 @@ async function submitEvidence(
         sandboxId: evidence.sandboxId,
         sandboxResult: evidence.sandboxResult,
         source: evidence.artifactSource,
+        expectedSnapshotHash: evidence.sandboxResult.snapshotHash,
+        expectedWorldRevision: evidence.sandboxResult.worldRevision,
         trueforgeSessionId: sessionId,
         trueforgeTurnId: turnId,
       }),
@@ -240,7 +242,9 @@ export async function runRecovery(
     turn.data.id,
     { limit: 100 },
   );
-  const evidence = analyzeRecoveryEvidence(persistedEvents.data, {
+  const completeEvents: TrueForgeApi.TurnStreamingEvent[] = [];
+  for await (const event of persistedEvents) completeEvents.push(event);
+  const evidence = analyzeRecoveryEvidence(completeEvents, {
     requireSubagents: true,
   });
   const evaluation = await submitEvidence(

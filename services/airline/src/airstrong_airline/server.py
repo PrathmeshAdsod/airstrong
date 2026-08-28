@@ -29,9 +29,11 @@ from .database import (
     migrate,
     persist_generated_artifact,
     persist_recovery_batch,
+    recovery_batch_by_id,
     reset_world,
     trigger_hero_scenario,
 )
+from .recovery import snapshot_hash
 from .views import (
     aircraft_investigation,
     crew_investigation,
@@ -247,8 +249,20 @@ async def post_recovery_evaluate(request: Request) -> JSONResponse:
         body = await request.json()
         source = str(body["source"])
         sandbox_result = body["sandboxResult"]
-        with connect(_database_url()) as connection:
+        expected_revision = int(body["expectedWorldRevision"])
+        expected_snapshot_hash = str(body["expectedSnapshotHash"])
+        with connect(_database_url()) as connection, connection.transaction():
+            world = connection.execute(
+                "SELECT revision FROM airline_worlds WHERE world_id = %s FOR UPDATE",
+                (world_id,),
+            ).fetchone()
+            if world is None:
+                raise KeyError(f"Unknown world {world_id}")
+            if world["revision"] != expected_revision:
+                raise ValueError("World revision changed while recovery computation was running")
             snapshot = load_snapshot(connection, world_id)
+            if snapshot_hash(snapshot) != expected_snapshot_hash:
+                raise ValueError("World snapshot changed while recovery computation was running")
             artifact_hash = persist_generated_artifact(
                 connection,
                 snapshot,
@@ -267,10 +281,13 @@ async def post_recovery_evaluate(request: Request) -> JSONResponse:
             )
             evaluations, ranked = evaluate_generated_candidates(snapshot, candidates)
             batch_id = persist_recovery_batch(connection, snapshot, candidates, evaluations, ranked)
+            batch = recovery_batch_by_id(connection, world_id, batch_id)
+            if batch is None:
+                raise RuntimeError("Persisted recovery batch could not be read")
             return JSONResponse(
                 {
                     "batchId": str(batch_id),
-                    "batch": recovery_batch_view(connection, world_id),
+                    "batch": public_value(batch),
                     "lineage": {
                         "artifactHash": artifact_hash,
                         "trueforgeSessionId": str(body["trueforgeSessionId"]),

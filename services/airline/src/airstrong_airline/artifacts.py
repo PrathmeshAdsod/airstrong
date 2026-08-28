@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .engine import calculate_operational_impacts
 from .models import WorldSnapshot
 from .ranking import NoValidCandidateError, rank_valid_candidates
 from .recovery import (
@@ -72,19 +73,33 @@ def validated_candidates(
 ) -> tuple[CandidatePlan, ...]:
     if len(payloads) != 3:
         raise ValueError("A recovery artifact must produce exactly three candidates")
+    authoritative_scope = tuple(
+        sorted(
+            {
+                impact.entity_id
+                for impact in calculate_operational_impacts(snapshot)
+                if impact.entity_type == "flight"
+            }
+        )
+    )
+    if not authoritative_scope:
+        raise ValueError("The authoritative incident has no impacted flight scope")
     candidates: list[CandidatePlan] = []
     action_sets: set[tuple[tuple[str, str, str], ...]] = set()
     for payload in payloads:
         strategy = StrategyParameters(**payload["strategy"])
         strategy.validate()
         actions = tuple(_parse_action(item) for item in payload["actions"])
+        scope_flight_ids = tuple(sorted({str(item) for item in payload["scopeFlightIds"]}))
+        if scope_flight_ids != authoritative_scope:
+            raise ValueError("Candidate scope does not match the authoritative incident scope")
         candidate = CandidatePlan(
             candidate_id=str(payload["candidateId"]),
             strategy=strategy,
             snapshot_hash=str(payload["snapshotHash"]),
             artifact_hash=str(payload["artifactHash"]),
             solver_version=str(payload["solverVersion"]),
-            scope_flight_ids=tuple(str(item) for item in payload["scopeFlightIds"]),
+            scope_flight_ids=scope_flight_ids,
             actions=actions,
             solver_status=str(payload["solverStatus"]),
             objective_value=int(payload["objectiveValue"]),
@@ -97,6 +112,7 @@ def validated_candidates(
             strategy=strategy,
             snapshot_digest=candidate.snapshot_hash,
             artifact_hash=artifact_hash,
+            scope_flight_ids=candidate.scope_flight_ids,
             actions=actions,
         )
         if candidate.candidate_id != expected_id:

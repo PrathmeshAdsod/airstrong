@@ -19,7 +19,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from airstrong_airline.database import DbConnection, connect, load_impacts, load_snapshot, migrate
-from airstrong_airline.recovery import StrategyParameters
+from airstrong_airline.recovery import StrategyParameters, snapshot_hash
 from airstrong_airline.sandbox_runtime import candidate_payload
 from airstrong_airline.server import _with_database, initialize_database, mcp
 from airstrong_airline.solver_primitives import generate_candidates
@@ -307,6 +307,8 @@ def test_runtime_artifact_is_verified_then_authoritative_twin_ranks(
                 "trueforgeSessionId": "session-test",
                 "trueforgeTurnId": "turn-test",
                 "sandboxId": "sandbox-test",
+                "expectedWorldRevision": snapshot.revision,
+                "expectedSnapshotHash": snapshot_hash(snapshot),
             },
         )
 

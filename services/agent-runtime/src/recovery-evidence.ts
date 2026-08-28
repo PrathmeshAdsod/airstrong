@@ -6,6 +6,8 @@ export interface SandboxRecoveryResult {
   artifactHash: string;
   artifactSourceBase64: string;
   candidates: unknown[];
+  snapshotHash: string;
+  worldRevision: number;
 }
 
 export interface RecoveryEvidence {
@@ -57,7 +59,9 @@ function parseSandboxResult(result: string): SandboxRecoveryResult | undefined {
   if (
     typeof value.artifactHash !== "string" ||
     typeof value.artifactSourceBase64 !== "string" ||
-    !Array.isArray(value.candidates)
+    !Array.isArray(value.candidates) ||
+    typeof value.snapshotHash !== "string" ||
+    !Number.isInteger(value.worldRevision)
   ) {
     throw new Error("Daytona returned an invalid Airstrong result envelope");
   }
@@ -83,47 +87,45 @@ export function analyzeRecoveryEvidence(
       event.type === "thread.created",
   );
   if (options.requireSubagents) {
-    const names = new Set(
-      subagentCalls
-        .map(({ call }) => parsedArguments(call)?.name)
-        .filter((name): name is string => typeof name === "string"),
+    const requiredByName = new Map([
+      ["Aircraft", "airline_aircraft_investigation"],
+      ["Crew", "airline_crew_investigation"],
+      ["Passenger", "airline_passenger_investigation"],
+    ]);
+    const callById = new Map(subagentCalls.map(({ call }) => [call.id, call]));
+    const childByName = new Map(
+      childThreads.map((event) => [event.agentInfo.name, event]),
     );
     if (
       subagentCalls.length !== 3 ||
       childThreads.length !== 3 ||
-      !["Aircraft", "Crew", "Passenger"].every((name) => names.has(name))
+      [...requiredByName].some(([name]) => {
+        const child = childByName.get(name);
+        if (!child) return true;
+        const parentCall = callById.get(child.parent.toolCallId);
+        return !parentCall || parsedArguments(parentCall)?.name !== name;
+      })
     ) {
       throw new Error(
         "Recovery investigation did not execute exactly the Aircraft, Crew, and Passenger subagents",
       );
     }
-    const childThreadIds = new Set(childThreads.map((event) => event.threadId));
-    const requiredTools = new Set([
-      "airline_aircraft_investigation",
-      "airline_crew_investigation",
-      "airline_passenger_investigation",
-    ]);
-    const childReadTools = new Set<string>();
+    const callsByThread = new Map<string, TrueForgeApi.ToolCall[]>();
     for (const { call, threadId } of calls) {
-      if (!childThreadIds.has(threadId)) continue;
-      if (requiredTools.has(call.toolInfo.name)) {
-        childReadTools.add(call.toolInfo.name);
-      }
-      if (call.toolInfo.name === "exec") {
-        const command = parsedArguments(call)?.command;
-        if (typeof command === "string") {
-          for (const toolName of requiredTools) {
-            if (command.includes(toolName)) childReadTools.add(toolName);
-          }
-        }
-      }
-      const serializedArguments = JSON.stringify(parsedArguments(call) ?? {});
-      for (const toolName of requiredTools) {
-        if (serializedArguments.includes(toolName))
-          childReadTools.add(toolName);
-      }
+      callsByThread.set(threadId, [
+        ...(callsByThread.get(threadId) ?? []),
+        call,
+      ]);
     }
-    if (childReadTools.size !== requiredTools.size) {
+    const missingGrounding = [...requiredByName].some(
+      ([name, requiredTool]) => {
+        const child = childByName.get(name)!;
+        return !(callsByThread.get(child.threadId) ?? []).some(
+          (call) => call.toolInfo.name === requiredTool,
+        );
+      },
+    );
+    if (missingGrounding) {
       throw new Error(
         "One or more recovery subagents did not perform its grounded MCP read",
       );

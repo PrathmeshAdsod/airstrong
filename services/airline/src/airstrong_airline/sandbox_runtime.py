@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 from datetime import datetime
-from itertools import product
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
@@ -142,7 +142,16 @@ def solve_recovery_problem(
     snapshot = snapshot_from_public_payload(snapshot_payload)
     if len(strategy_payloads) < 3:
         raise ValueError("At least three strategy proposals are required")
-    proposals = [StrategyParameters(**item) for item in strategy_payloads]
+    proposals: list[StrategyParameters] = []
+    for item in strategy_payloads:
+        try:
+            proposal = StrategyParameters(**item)
+            proposal.validate()
+        except (TypeError, ValueError):
+            continue
+        proposals.append(proposal)
+    if len(proposals) < 3:
+        raise CandidateDiversityError("At least three valid strategy proposals are required")
     scope_size = len(set(scope_flight_ids))
     disruption_minutes = max(
         (int((item.ends_at - item.starts_at).total_seconds() // 60) for item in snapshot.disruptions),
@@ -168,33 +177,33 @@ def solve_recovery_problem(
         }
     )
     variants = list(proposals)
-    for variant_number, (
-        proposal,
-        max_cancellations,
-        max_delay_minutes,
-        substitution,
-    ) in enumerate(
-        product(
-            proposals,
-            cancellation_limits,
-            delay_limits,
-            (False, True),
-        ),
-        start=1,
-    ):
-        variants.append(
-            replace(
-                proposal,
-                strategy_id=f"{proposal.strategy_id}-derived-{variant_number:03d}",
-                max_cancellations=max_cancellations,
-                max_delay_minutes=max_delay_minutes,
-                allow_aircraft_substitution=substitution,
+    for variant_number, proposal in enumerate(proposals, start=1):
+        variants.extend(
+            (
+                replace(
+                    proposal,
+                    strategy_id=f"{proposal.strategy_id}-derived-{variant_number:03d}-delay",
+                    max_cancellations=cancellation_limits[0],
+                    max_delay_minutes=delay_limits[-1],
+                    allow_aircraft_substitution=True,
+                ),
+                replace(
+                    proposal,
+                    strategy_id=f"{proposal.strategy_id}-derived-{variant_number:03d}-speed",
+                    max_cancellations=cancellation_limits[-1],
+                    max_delay_minutes=delay_limits[min(2, len(delay_limits) - 1)],
+                    allow_aircraft_substitution=not proposal.allow_aircraft_substitution,
+                ),
             )
         )
+    variants = variants[:18]
 
     candidates: list[CandidatePlan] = []
     action_sets: set[tuple[tuple[str, str, str], ...]] = set()
+    deadline = monotonic() + 45
     for strategy in variants:
+        if monotonic() >= deadline:
+            break
         try:
             candidate = solve_candidate(
                 snapshot,
@@ -202,7 +211,7 @@ def solve_recovery_problem(
                 strategy,
                 artifact_hash=artifact_hash,
             )
-        except RecoverySolverError:
+        except (RecoverySolverError, ValueError):
             continue
         action_key = tuple(
             (action.action_type, action.flight_id, repr(action)) for action in candidate.actions

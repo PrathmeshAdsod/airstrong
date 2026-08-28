@@ -13,6 +13,7 @@ from airstrong_airline.database import (
     events_after,
     load_snapshot,
     migrate,
+    persist_generated_artifact,
     persist_recovery_batch,
     trigger_hero_scenario,
 )
@@ -24,6 +25,47 @@ from airstrong_airline.twin import evaluate_candidate, factual_replanning_feedba
 DATABASE_URL = os.getenv("AIRSTRONG_TEST_DATABASE_URL")
 pytestmark = pytest.mark.integration
 ARTIFACT_HASH = hashlib.sha256(b"runtime-generated-recovery-fixture").hexdigest()
+
+
+def test_generated_artifact_preserves_execution_lineage(recovery_world) -> None:
+    connection, _, snapshot, _ = recovery_world
+    source = "print('same generated source')\n"
+    first_hash = persist_generated_artifact(
+        connection,
+        snapshot,
+        source=source,
+        sandbox_stdout={"result": "ok"},
+        trueforge_session_id="session-one",
+        trueforge_turn_id="turn-one",
+        sandbox_id="sandbox-one",
+    )
+    second_hash = persist_generated_artifact(
+        connection,
+        snapshot,
+        source=source,
+        sandbox_stdout={"result": "ok"},
+        trueforge_session_id="session-two",
+        trueforge_turn_id="turn-two",
+        sandbox_id="sandbox-two",
+    )
+
+    rows = connection.execute(
+        "SELECT trueforge_session_id FROM airline_generated_artifacts WHERE artifact_hash = %s",
+        (first_hash,),
+    ).fetchall()
+    assert second_hash == first_hash
+    assert {row["trueforge_session_id"] for row in rows} == {"session-one", "session-two"}
+
+    with pytest.raises(ValueError, match="lineage conflicts"):
+        persist_generated_artifact(
+            connection,
+            snapshot,
+            source="print('different source')\n",
+            sandbox_stdout={"result": "changed"},
+            trueforge_session_id="session-one",
+            trueforge_turn_id="turn-one",
+            sandbox_id="sandbox-one",
+        )
 
 
 @pytest.fixture()

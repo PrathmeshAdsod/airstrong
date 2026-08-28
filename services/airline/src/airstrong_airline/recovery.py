@@ -157,6 +157,7 @@ def candidate_content_hash(
     strategy: StrategyParameters,
     snapshot_digest: str,
     artifact_hash: str,
+    scope_flight_ids: tuple[str, ...],
     actions: tuple[RecoveryAction, ...],
 ) -> str:
     body = {
@@ -164,6 +165,7 @@ def candidate_content_hash(
         "snapshotHash": snapshot_digest,
         "artifactHash": artifact_hash,
         "solverVersion": SOLVER_PRIMITIVES_VERSION,
+        "scopeFlightIds": list(scope_flight_ids),
         "actions": [action_payload(action) for action in actions],
     }
     return hashlib.sha256(canonical_json(body).encode()).hexdigest()

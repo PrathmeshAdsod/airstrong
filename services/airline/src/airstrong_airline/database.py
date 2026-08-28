@@ -489,18 +489,7 @@ def load_impacts(
     )
 
 
-def latest_recovery_batch(connection: DbConnection, world_id: UUID) -> DbRow | None:
-    batch = connection.execute(
-        """
-        SELECT batch_id, world_id, world_revision, snapshot_hash, artifact_hash,
-               ranking_version, created_at
-        FROM airline_recovery_batches
-        WHERE world_id = %s
-        ORDER BY created_at DESC, batch_id DESC
-        LIMIT 1
-        """,
-        (world_id,),
-    ).fetchone()
+def _recovery_batch_payload(connection: DbConnection, batch: DbRow | None) -> DbRow | None:
     if batch is None:
         return None
     candidates = connection.execute(
@@ -516,6 +505,38 @@ def latest_recovery_batch(connection: DbConnection, world_id: UUID) -> DbRow | N
         (batch["batch_id"],),
     ).fetchall()
     return {**batch, "candidates": list(candidates)}
+
+
+def latest_recovery_batch(connection: DbConnection, world_id: UUID) -> DbRow | None:
+    return _recovery_batch_payload(
+        connection,
+        connection.execute(
+            """
+        SELECT batch_id, world_id, world_revision, snapshot_hash, artifact_hash,
+               ranking_version, created_at
+        FROM airline_recovery_batches
+        WHERE world_id = %s
+        ORDER BY created_at DESC, batch_id DESC
+        LIMIT 1
+        """,
+            (world_id,),
+        ).fetchone(),
+    )
+
+
+def recovery_batch_by_id(connection: DbConnection, world_id: UUID, batch_id: UUID) -> DbRow | None:
+    return _recovery_batch_payload(
+        connection,
+        connection.execute(
+            """
+        SELECT batch_id, world_id, world_revision, snapshot_hash, artifact_hash,
+               ranking_version, created_at
+        FROM airline_recovery_batches
+        WHERE world_id = %s AND batch_id = %s
+        """,
+            (world_id, batch_id),
+        ).fetchone(),
+    )
 
 
 def _persist_impacts(
@@ -948,16 +969,22 @@ def persist_generated_artifact(
     sandbox_id: str,
 ) -> str:
     artifact_hash = hashlib.sha256(source.encode()).hexdigest()
+    artifact_id = uuid5(
+        snapshot.world_id,
+        f"artifact:{snapshot.revision}:{trueforge_session_id}:{trueforge_turn_id}",
+    )
     with connection.transaction():
         connection.execute(
             """
             INSERT INTO airline_generated_artifacts(
-                artifact_hash, world_id, world_revision, trueforge_session_id,
+                artifact_id, artifact_hash, world_id, world_revision, trueforge_session_id,
                 trueforge_turn_id, sandbox_id, source, sandbox_stdout
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (artifact_hash) DO NOTHING
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (world_id, world_revision, trueforge_session_id, trueforge_turn_id)
+            DO NOTHING
             """,
             (
+                artifact_id,
                 artifact_hash,
                 snapshot.world_id,
                 snapshot.revision,
@@ -968,4 +995,25 @@ def persist_generated_artifact(
                 Jsonb(sandbox_stdout),
             ),
         )
+        stored = connection.execute(
+            """
+            SELECT artifact_hash, sandbox_id, source, sandbox_stdout
+            FROM airline_generated_artifacts
+            WHERE world_id = %s AND world_revision = %s
+              AND trueforge_session_id = %s AND trueforge_turn_id = %s
+            """,
+            (
+                snapshot.world_id,
+                snapshot.revision,
+                trueforge_session_id,
+                trueforge_turn_id,
+            ),
+        ).fetchone()
+        if stored is None or (
+            stored["artifact_hash"] != artifact_hash
+            or stored["sandbox_id"] != sandbox_id
+            or stored["source"] != source
+            or stored["sandbox_stdout"] != sandbox_stdout
+        ):
+            raise ValueError("Generated artifact lineage conflicts with an existing execution")
     return artifact_hash
