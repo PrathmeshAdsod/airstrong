@@ -53,6 +53,7 @@ from .views import (
     passenger_investigation,
     public_value,
     recovery_batch_view,
+    recovery_runs_view,
     snapshot_view,
     world_view,
 )
@@ -298,8 +299,14 @@ async def get_recovery(request: Request) -> JSONResponse:
         return _error_response(error)
 
 
-@mcp.custom_route("/api/worlds/{world_id}/recovery/runs", methods=["POST"])
+@mcp.custom_route("/api/worlds/{world_id}/recovery/runs", methods=["GET", "POST"])
 async def post_recovery_run(request: Request) -> JSONResponse:
+    if request.method == "GET":
+        try:
+            runs = _with_database(recovery_runs_view, request.path_params["world_id"])
+            return JSONResponse({"runs": runs})
+        except Exception as error:
+            return _error_response(error)
     if not _authorized_runtime(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
@@ -551,6 +558,20 @@ def _sse_event(event: dict[str, Any]) -> str:
     return f"id: {event['sequence']}\nevent: {event['eventType']}\ndata: {data}\n\n"
 
 
+def _event_headers(request: Request) -> dict[str, str]:
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    origin = request.headers.get("origin")
+    allowed_origins = {
+        value.strip()
+        for value in os.getenv("AIRSTRONG_WEB_ORIGINS", "http://localhost:3000").split(",")
+        if value.strip()
+    }
+    if origin in allowed_origins:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Vary"] = "Origin"
+    return headers
+
+
 async def _async_events_after(
     connection: psycopg.AsyncConnection[DbRow],
     world_id: UUID,
@@ -635,12 +656,12 @@ async def get_events(request: Request) -> Response:
                 return StreamingResponse(
                     iter(_sse_event(event) for event in replay),
                     media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    headers=_event_headers(request),
                 )
         return StreamingResponse(
             _event_stream(world_id, after, follow=True),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers=_event_headers(request),
         )
     except Exception as error:
         return _error_response(error)

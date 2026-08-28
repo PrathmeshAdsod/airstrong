@@ -6,7 +6,14 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from .database import DbConnection, latest_recovery_batch, load_impacts, load_snapshot, load_world
+from .database import (
+    DbConnection,
+    latest_recovery_batch,
+    load_impacts,
+    load_snapshot,
+    load_world,
+    recovery_runs_for_world,
+)
 
 _SNAKE_PART = re.compile(r"_([a-z])")
 
@@ -173,3 +180,7 @@ def passenger_investigation(connection: DbConnection, world_id: UUID) -> dict[st
 def recovery_batch_view(connection: DbConnection, world_id: UUID) -> dict[str, Any] | None:
     batch = latest_recovery_batch(connection, world_id)
     return None if batch is None else public_value(batch)
+
+
+def recovery_runs_view(connection: DbConnection, world_id: UUID) -> list[dict[str, Any]]:
+    return [public_value(run) for run in recovery_runs_for_world(connection, world_id)]

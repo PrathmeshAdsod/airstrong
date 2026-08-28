@@ -181,6 +181,27 @@ def test_rest_data_and_scenario_mutation_are_authoritative(api_world: tuple[str,
         assert any(item["status"] == "at_risk" for item in flights_after)
 
 
+def test_recovery_runs_are_listed_from_durable_state(api_world: tuple[str, UUID]) -> None:
+    server_url, world_id = api_world
+    with httpx.Client(base_url=server_url, timeout=10) as client:
+        client.post(
+            f"/api/worlds/{world_id}/scenarios/hero",
+            headers={"Idempotency-Key": "hero-run-list"},
+        ).raise_for_status()
+        created = client.post(
+            f"/api/worlds/{world_id}/recovery/runs",
+            headers={
+                "Authorization": "Bearer test-runtime-token",
+                "Idempotency-Key": "recovery-run-list",
+            },
+        )
+        assert created.status_code == 201
+        listed = client.get(f"/api/worlds/{world_id}/recovery/runs")
+
+    assert listed.status_code == 200
+    assert [run["runId"] for run in listed.json()["runs"]] == [created.json()["run"]["runId"]]
+
+
 def test_sse_replays_exactly_after_a_durable_cursor(api_world: tuple[str, UUID]) -> None:
     server_url, world_id = api_world
     with httpx.Client(base_url=server_url, timeout=10) as client:
