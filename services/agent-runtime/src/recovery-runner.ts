@@ -659,10 +659,7 @@ export async function prepareRecovery(
     await persistedApprovalEvents.getNextPage();
     completeEvents.push(...persistedApprovalEvents.data);
   }
-  const approvalEvidence = analyzeExecutionApproval(
-    completeEvents,
-    run,
-  );
+  const approvalEvidence = analyzeExecutionApproval(completeEvents, run);
   if (run.trueforgeToolCallId === null) {
     run = await linkApprovalEvent(
       config,
