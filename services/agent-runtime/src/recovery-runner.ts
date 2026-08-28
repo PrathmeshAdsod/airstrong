@@ -200,7 +200,7 @@ async function airlineRequest<T>(
   return (await response.json()) as T;
 }
 
-async function createDurableRun(
+export async function ensureDurableRun(
   config: RecoveryRuntimeConfig,
   worldId: string,
   idempotencyKey: string,
@@ -214,6 +214,25 @@ async function createDurableRun(
     },
   );
   return response.run;
+}
+
+export async function reportRecoveryFailure(
+  config: RecoveryRuntimeConfig,
+  runId: string,
+  stage: string,
+  error: unknown,
+): Promise<DurableRecoveryRun> {
+  const detail = error instanceof Error ? error.message : String(error);
+  return (
+    await airlineRequest<RunResponse>(
+      config,
+      `/api/recovery/runs/${runId}/failure`,
+      {
+        body: JSON.stringify({ detail, stage }),
+        method: "POST",
+      },
+    )
+  ).run;
 }
 
 export async function getDurableRun(
@@ -554,7 +573,7 @@ export async function prepareRecovery(
   worldId: string,
   idempotencyKey: string,
 ): Promise<DurableRecoveryRun> {
-  let run = await createDurableRun(config, worldId, idempotencyKey);
+  let run = await ensureDurableRun(config, worldId, idempotencyKey);
   if (
     [
       "approved",

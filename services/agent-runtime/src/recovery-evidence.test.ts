@@ -77,12 +77,25 @@ void test("recovery evidence requires real grounded subagents and a self-hashed 
     {
       type: "model.message",
       threadId: "crew-thread",
-      toolCalls: [call("read-2", "airline_crew_investigation", {})],
+      toolCalls: [
+        call("read-2", "exec", {
+          command:
+            "python3 -c \"from mcp_client import call_tool; call_tool('airstrong-airline', 'airline_crew_investigation')\"",
+        }),
+      ],
     },
     {
       type: "model.message",
       threadId: "passenger-thread",
       toolCalls: [call("read-3", "airline_passenger_investigation", {})],
+    },
+    {
+      type: "tool.response",
+      toolCallId: "read-2",
+      content: JSON.stringify({
+        success: true,
+        response: { exitCode: 0, result: "grounded crew facts" },
+      }),
     },
     {
       type: "tool.response",

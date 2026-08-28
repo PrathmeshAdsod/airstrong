@@ -83,6 +83,14 @@ export function analyzeRecoveryEvidence(
   const calls = modelMessages.flatMap((event) =>
     (event.toolCalls ?? []).map((call) => ({ call, threadId: event.threadId })),
   );
+  const responseByCall = new Map(
+    events
+      .filter(
+        (event): event is TrueForgeApi.ToolResponseEvent =>
+          event.type === "tool.response",
+      )
+      .map((event) => [event.toolCallId, event]),
+  );
   const subagentCalls = calls.filter(
     ({ call }) => call.toolInfo.name === "create_sub_agent",
   );
@@ -133,9 +141,20 @@ export function analyzeRecoveryEvidence(
     const missingGrounding = [...requiredByName].some(
       ([name, requiredTool]) => {
         const child = childByName.get(name)!;
-        return !(callsByThread.get(child.threadId) ?? []).some(
-          (call) => call.toolInfo.name === requiredTool,
-        );
+        return !(callsByThread.get(child.threadId) ?? []).some((call) => {
+          if (call.toolInfo.name === requiredTool) return true;
+          if (call.toolInfo.name !== "exec") return false;
+          const command = parsedArguments(call)?.command;
+          const response = responseByCall.get(call.id);
+          return (
+            typeof command === "string" &&
+            command.includes("mcp_client") &&
+            command.includes("call_tool") &&
+            command.includes(requiredTool) &&
+            response !== undefined &&
+            successfulResult(response) !== undefined
+          );
+        });
       },
     );
     if (missingGrounding) {
@@ -155,14 +174,6 @@ export function analyzeRecoveryEvidence(
     ({ call }) =>
       isGeneratedPythonExecution(call) &&
       String(parsedArguments(call)?.command).includes("recovery_problem.py"),
-  );
-  const responseByCall = new Map(
-    events
-      .filter(
-        (event): event is TrueForgeApi.ToolResponseEvent =>
-          event.type === "tool.response",
-      )
-      .map((event) => [event.toolCallId, event]),
   );
   const completed = generatedPythonCalls.flatMap(({ call }) => {
     const response = responseByCall.get(call.id);

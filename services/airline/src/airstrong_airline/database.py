@@ -1113,6 +1113,13 @@ def link_recovery_investigation_turn(
             """,
             (trueforge_session_id, investigation_turn_id, run_id),
         )
+        _append_event(
+            connection,
+            current["world_id"],
+            "recovery.computing",
+            current["started_world_revision"],
+            {"runId": str(run_id), "trueforgeSessionId": trueforge_session_id},
+        )
         return recovery_run(connection, run_id)
 
 
@@ -1286,6 +1293,17 @@ def record_trueforge_approval_request(
             WHERE run_id = %s
             """,
             (thread_id, tool_call_id, approval_event_id, run_id),
+        )
+        _append_event(
+            connection,
+            run["world_id"],
+            "recovery.approval_paused",
+            run["started_world_revision"],
+            {
+                "runId": str(run_id),
+                "approvalId": str(run["approval_id"]),
+                "trueforgeApprovalEventId": approval_event_id,
+            },
         )
         return recovery_run(connection, run_id)
 
@@ -1688,3 +1706,36 @@ def verify_recovery_execution(
             },
         )
         return {**verification, "replayed": False}
+
+
+def fail_recovery_run(
+    connection: DbConnection,
+    run_id: UUID,
+    *,
+    stage: str,
+    detail: str,
+) -> DbRow:
+    normalized_detail = detail.strip()[:2_000]
+    if not stage.strip() or not normalized_detail:
+        raise ValueError("Failure stage and detail are required")
+    with connection.transaction():
+        run = recovery_run(connection, run_id)
+        if run["status"] in {"verified", "denied", "no_valid_candidate", "stale"}:
+            return run
+        failure = {"stage": stage.strip(), "detail": normalized_detail}
+        connection.execute(
+            """
+            UPDATE airline_recovery_runs
+            SET status = 'failed', failure = %s, updated_at = now()
+            WHERE run_id = %s
+            """,
+            (Jsonb(failure), run_id),
+        )
+        _append_event(
+            connection,
+            run["world_id"],
+            "recovery.failed",
+            load_world(connection, run["world_id"])["revision"],
+            {"runId": str(run_id), **failure},
+        )
+        return recovery_run(connection, run_id)

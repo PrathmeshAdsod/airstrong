@@ -13,6 +13,7 @@ from airstrong_airline.database import (
     create_recovery_run,
     create_world,
     decide_recovery_approval,
+    fail_recovery_run,
     link_recovery_investigation_turn,
     load_snapshot,
     migrate,
@@ -188,3 +189,20 @@ def test_stale_world_rejects_approved_recovery(prepared_recovery) -> None:
         == 0
     )
     assert recovery_run(connection, run_id)["status"] == "stale"
+
+
+def test_runtime_failure_is_a_durable_factual_run_state(prepared_recovery) -> None:
+    connection, _, run_id, _ = prepared_recovery
+
+    failed = fail_recovery_run(
+        connection,
+        run_id,
+        stage="prepare",
+        detail="provider returned a factual failure",
+    )
+
+    assert failed["status"] == "failed"
+    assert failed["failure"] == {
+        "stage": "prepare",
+        "detail": "provider returned a factual failure",
+    }

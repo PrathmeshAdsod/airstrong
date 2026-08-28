@@ -1,0 +1,11 @@
+.airstrong
+.env
+.env.*
+.git
+.next
+**/.next
+**/.venv
+**/__pycache__
+**/node_modules
+node_modules
+npm-debug.log*

@@ -11,6 +11,8 @@
     "lint": "eslint . --max-warnings=0",
     "recovery:decide": "tsx src/decide-recovery.ts",
     "recovery:run": "tsx src/run-recovery.ts",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
     "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

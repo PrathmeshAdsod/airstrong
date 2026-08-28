@@ -28,6 +28,7 @@ from .database import (
     decide_recovery_approval,
     default_world,
     events_after,
+    fail_recovery_run,
     link_recovery_approval_continuation,
     link_recovery_execution_turn,
     link_recovery_investigation_turn,
@@ -36,8 +37,8 @@ from .database import (
     migrate,
     persist_generated_artifact,
     persist_recovery_batch,
-    recovery_batch_by_id,
     record_trueforge_approval_request,
+    recovery_batch_by_id,
     recovery_run,
     request_recovery_approval,
     reset_world,
@@ -425,6 +426,24 @@ async def post_recovery_approval_decision(request: Request) -> JSONResponse:
                 _world_id(request.path_params["run_id"]),
                 decision=str(body["decision"]),
                 idempotency_key=idempotency_key,
+            )
+            return JSONResponse({"run": public_value(run)})
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}/failure", methods=["POST"])
+async def post_recovery_failure(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        with connect(_database_url()) as connection:
+            run = fail_recovery_run(
+                connection,
+                _world_id(request.path_params["run_id"]),
+                stage=str(body["stage"]),
+                detail=str(body["detail"]),
             )
             return JSONResponse({"run": public_value(run)})
     except Exception as error:
