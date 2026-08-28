@@ -168,8 +168,11 @@ async def post_world(request: Request) -> JSONResponse:
                 idempotency_key=idempotency_key,
                 display_name=display_name,
             )
+            with connection.transaction():
+                connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                world = world_view(connection, world_id)
             return JSONResponse(
-                {"world": world_view(connection, world_id), "replayed": replayed},
+                {"world": world, "replayed": replayed},
                 status_code=200 if replayed else 201,
             )
     except Exception as error:
@@ -309,12 +312,21 @@ async def _event_stream(world_id: UUID, after: int, *, follow: bool) -> AsyncIte
 async def get_events(request: Request) -> Response:
     try:
         world_id = _world_id(request.path_params["world_id"])
-        query_after = int(request.query_params.get("after", "0"))
-        header_after = int(request.headers.get("Last-Event-ID", "0"))
+        try:
+            query_after = int(request.query_params.get("after", "0"))
+            header_after = int(request.headers.get("Last-Event-ID", "0"))
+        except ValueError:
+            return JSONResponse(
+                {"error": "invalid_request", "detail": "event cursor must be an integer"},
+                status_code=400,
+            )
+        if query_after < 0 or header_after < 0:
+            return JSONResponse(
+                {"error": "invalid_request", "detail": "event cursor cannot be negative"},
+                status_code=400,
+            )
         after = max(query_after, header_after)
         follow = request.query_params.get("follow", "true").lower() != "false"
-        if after < 0:
-            raise ValueError("event cursor cannot be negative")
         with connect(_database_url()) as connection:
             load_world(connection, world_id)
             if not follow:

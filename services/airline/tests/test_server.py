@@ -138,6 +138,15 @@ def test_sse_rejects_unknown_world_before_opening_stream(server_url: str) -> Non
     assert response.json()["error"] == "not_found"
 
 
+@pytest.mark.parametrize("cursor", ["not-an-integer", "-1"])
+def test_sse_rejects_invalid_cursors_as_bad_requests(server_url: str, cursor: str) -> None:
+    with httpx.Client(base_url=server_url, timeout=10) as client:
+        response = client.get(f"/api/worlds/{uuid4()}/events?after={cursor}")
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_request"
+
+
 def test_rest_data_and_scenario_mutation_are_authoritative(api_world: tuple[str, UUID]) -> None:
     server_url, world_id = api_world
     with httpx.Client(base_url=server_url, timeout=10) as client:
