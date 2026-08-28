@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import asdict
@@ -934,3 +935,37 @@ def persist_recovery_batch(
             },
         )
     return batch_id
+
+
+def persist_generated_artifact(
+    connection: DbConnection,
+    snapshot: WorldSnapshot,
+    *,
+    source: str,
+    sandbox_stdout: dict[str, Any],
+    trueforge_session_id: str,
+    trueforge_turn_id: str,
+    sandbox_id: str,
+) -> str:
+    artifact_hash = hashlib.sha256(source.encode()).hexdigest()
+    with connection.transaction():
+        connection.execute(
+            """
+            INSERT INTO airline_generated_artifacts(
+                artifact_hash, world_id, world_revision, trueforge_session_id,
+                trueforge_turn_id, sandbox_id, source, sandbox_stdout
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (artifact_hash) DO NOTHING
+            """,
+            (
+                artifact_hash,
+                snapshot.world_id,
+                snapshot.revision,
+                trueforge_session_id,
+                trueforge_turn_id,
+                sandbox_id,
+                source,
+                Jsonb(sandbox_stdout),
+            ),
+        )
+    return artifact_hash

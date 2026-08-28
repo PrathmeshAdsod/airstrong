@@ -34,6 +34,10 @@ Airstrong runtime
 
 Generated code may call checked-in trusted solver primitives, but it never writes to the live airline state. Plan letters are presentation labels assigned only after candidates have been stored and ranked. They have no strategy or outcome semantics.
 
+The PR5 sandbox contract keeps that boundary auditable. The generated Python reads the world and a hashed solver-library bundle through the airline MCP, materializes that bundle inside its session-scoped Daytona sandbox, and hashes its own exact source. It proposes incident-specific parameters and executes the pinned OR-Tools primitives. The airline service then reconstructs every returned action, verifies candidate, snapshot, solver, and artifact hashes, persists the source and TrueForge/Daytona lineage, and independently runs the twin and ranker. Untrusted model text cannot mark a candidate valid or recommended.
+
+Parameter exploration is deterministic but outcome-neutral. It starts with the model's incident-specific proposals, derives bounded cancellation, delay, and substitution variants from the actual disruption duration and recovery scope, skips infeasible formulations, and keeps only distinct action sets. It does not require a rejected candidate, a valid candidate, or a predetermined winner. A run may truthfully produce all valid candidates, some invalid candidates, or no valid recovery.
+
 Candidate generation, authoritative validation, and the versioned lexicographic objective are specified in [recovery-objective.md](recovery-objective.md). Solver weights create proposal diversity; they never replace the twin or select the recommendation.
 
 ## Safe usage controls

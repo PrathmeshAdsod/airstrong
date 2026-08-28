@@ -22,6 +22,7 @@ services:
       context: ./services/airline
     environment:
       AIRSTRONG_DATABASE_URL: postgresql://airstrong:local-airstrong-only@postgres:5432/airstrong
+      AIRSTRONG_RUNTIME_TOKEN: local-runtime-token-only
       HOST: 0.0.0.0
       PORT: 4200
     ports:
