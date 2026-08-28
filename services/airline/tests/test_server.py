@@ -313,8 +313,25 @@ def test_runtime_artifact_is_verified_then_authoritative_twin_ranks(
                 "expectedSnapshotHash": snapshot_hash(snapshot),
             },
         )
+        malformed_result = json.loads(json.dumps(sandbox_result))
+        malformed_result["candidates"][0]["objectiveValue"] = 1.5
+        malformed = client.post(
+            f"/api/worlds/{world_id}/recovery/evaluate",
+            headers={"Authorization": "Bearer test-runtime-token"},
+            json={
+                "source": source,
+                "sandboxResult": malformed_result,
+                "trueforgeSessionId": "session-malformed",
+                "trueforgeTurnId": "turn-malformed",
+                "sandboxId": "sandbox-malformed",
+                "expectedWorldRevision": snapshot.revision,
+                "expectedSnapshotHash": snapshot_hash(snapshot),
+            },
+        )
 
     assert unauthorized.status_code == 401
+    assert malformed.status_code == 409
+    assert "objectiveValue must be an integer" in malformed.text
     assert response.status_code == 201, response.text
     body = response.json()
     assert body["lineage"]["artifactHash"] == artifact_hash

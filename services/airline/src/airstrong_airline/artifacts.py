@@ -46,22 +46,82 @@ def solver_bundle() -> dict[str, Any]:
     }
 
 
-def _parse_action(payload: dict[str, Any]) -> CancelFlight | RetimeFlight | ReassignAircraft:
-    action_type = payload.get("action_type")
+def _required_string(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a non-empty string")
+    return value
+
+
+def _required_integer(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if type(value) is not int:
+        raise ValueError(f"{key} must be an integer")
+    return value
+
+
+def _parse_strategy(payload: Any) -> StrategyParameters:
+    if not isinstance(payload, dict):
+        raise ValueError("Candidate strategy must be an object")
+    expected_keys = {
+        "strategy_id",
+        "max_cancellations",
+        "max_delay_minutes",
+        "allow_aircraft_substitution",
+        "cancellation_weight",
+        "passenger_preservation_weight",
+        "delay_weight",
+        "aircraft_reassignment_weight",
+        "stabilization_weight",
+    }
+    if set(payload) != expected_keys:
+        raise ValueError("Candidate strategy fields do not match the trusted schema")
+    substitution = payload["allow_aircraft_substitution"]
+    if type(substitution) is not bool:
+        raise ValueError("allow_aircraft_substitution must be a boolean")
+    strategy = StrategyParameters(
+        strategy_id=_required_string(payload, "strategy_id"),
+        max_cancellations=_required_integer(payload, "max_cancellations"),
+        max_delay_minutes=_required_integer(payload, "max_delay_minutes"),
+        allow_aircraft_substitution=substitution,
+        cancellation_weight=_required_integer(payload, "cancellation_weight"),
+        passenger_preservation_weight=_required_integer(payload, "passenger_preservation_weight"),
+        delay_weight=_required_integer(payload, "delay_weight"),
+        aircraft_reassignment_weight=_required_integer(payload, "aircraft_reassignment_weight"),
+        stabilization_weight=_required_integer(payload, "stabilization_weight"),
+    )
+    strategy.validate()
+    return strategy
+
+
+def _parse_action(payload: Any) -> CancelFlight | RetimeFlight | ReassignAircraft:
+    if not isinstance(payload, dict):
+        raise ValueError("Candidate action must be an object")
+    action_type = _required_string(payload, "action_type")
     if action_type == "cancel_flight":
-        return CancelFlight(action_type, str(payload["flight_id"]))
+        if set(payload) != {"action_type", "flight_id"}:
+            raise ValueError("Cancel action fields do not match the trusted schema")
+        return CancelFlight("cancel_flight", _required_string(payload, "flight_id"))
     if action_type == "retime_flight":
+        if set(payload) != {"action_type", "flight_id", "departure", "arrival"}:
+            raise ValueError("Retime action fields do not match the trusted schema")
+        departure = datetime.fromisoformat(_required_string(payload, "departure").replace("Z", "+00:00"))
+        arrival = datetime.fromisoformat(_required_string(payload, "arrival").replace("Z", "+00:00"))
+        if departure.tzinfo is None or arrival.tzinfo is None:
+            raise ValueError("Retime action timestamps must include a timezone")
         return RetimeFlight(
-            action_type,
-            str(payload["flight_id"]),
-            datetime.fromisoformat(str(payload["departure"]).replace("Z", "+00:00")),
-            datetime.fromisoformat(str(payload["arrival"]).replace("Z", "+00:00")),
+            "retime_flight",
+            _required_string(payload, "flight_id"),
+            departure,
+            arrival,
         )
     if action_type == "reassign_aircraft":
+        if set(payload) != {"action_type", "flight_id", "aircraft_id"}:
+            raise ValueError("Aircraft reassignment fields do not match the trusted schema")
         return ReassignAircraft(
-            action_type,
-            str(payload["flight_id"]),
-            str(payload["aircraft_id"]),
+            "reassign_aircraft",
+            _required_string(payload, "flight_id"),
+            _required_string(payload, "aircraft_id"),
         )
     raise ValueError(f"Unknown recovery action type {action_type!r}")
 
@@ -89,22 +149,43 @@ def validated_candidates(
     candidates: list[CandidatePlan] = []
     action_sets: set[tuple[tuple[str, str, str], ...]] = set()
     for payload in payloads:
-        strategy = StrategyParameters(**payload["strategy"])
-        strategy.validate()
-        actions = tuple(_parse_action(item) for item in payload["actions"])
-        scope_flight_ids = tuple(sorted({str(item) for item in payload["scopeFlightIds"]}))
+        if not isinstance(payload, dict):
+            raise ValueError("Candidate must be an object")
+        if set(payload) != {
+            "candidateId",
+            "strategy",
+            "snapshotHash",
+            "artifactHash",
+            "solverVersion",
+            "scopeFlightIds",
+            "actions",
+            "solverStatus",
+            "objectiveValue",
+        }:
+            raise ValueError("Candidate fields do not match the trusted schema")
+        strategy = _parse_strategy(payload.get("strategy"))
+        action_payloads = payload.get("actions")
+        if not isinstance(action_payloads, list):
+            raise ValueError("Candidate actions must be an array")
+        actions = tuple(_parse_action(item) for item in action_payloads)
+        scope_payload = payload.get("scopeFlightIds")
+        if not isinstance(scope_payload, list) or not all(
+            isinstance(item, str) and item for item in scope_payload
+        ):
+            raise ValueError("scopeFlightIds must be an array of non-empty strings")
+        scope_flight_ids = tuple(scope_payload)
         if scope_flight_ids != authoritative_scope:
             raise ValueError("Candidate scope does not match the authoritative incident scope")
         candidate = CandidatePlan(
-            candidate_id=str(payload["candidateId"]),
+            candidate_id=_required_string(payload, "candidateId"),
             strategy=strategy,
-            snapshot_hash=str(payload["snapshotHash"]),
-            artifact_hash=str(payload["artifactHash"]),
-            solver_version=str(payload["solverVersion"]),
+            snapshot_hash=_required_string(payload, "snapshotHash"),
+            artifact_hash=_required_string(payload, "artifactHash"),
+            solver_version=_required_string(payload, "solverVersion"),
             scope_flight_ids=scope_flight_ids,
             actions=actions,
-            solver_status=str(payload["solverStatus"]),
-            objective_value=int(payload["objectiveValue"]),
+            solver_status=_required_string(payload, "solverStatus"),
+            objective_value=_required_integer(payload, "objectiveValue"),
         )
         if candidate.artifact_hash != artifact_hash:
             raise ValueError("Candidate artifact hash does not match submitted source")

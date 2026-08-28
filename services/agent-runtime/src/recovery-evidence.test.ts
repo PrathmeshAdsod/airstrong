@@ -63,7 +63,10 @@ void test("recovery evidence requires real grounded subagents and a self-hashed 
         call("sub-1", "create_sub_agent", { name: "Aircraft" }),
         call("sub-2", "create_sub_agent", { name: "Crew" }),
         call("sub-3", "create_sub_agent", { name: "Passenger" }),
-        call("exec-1", "exec", { command: "python3 recovery_problem.py" }),
+        call("exec-1", "exec", {
+          command:
+            "cat <<'PY' > recovery_problem.py\nfrom mcp_client import call_tool\nPY\npython3 recovery_problem.py",
+        }),
       ],
     },
     {
@@ -107,6 +110,19 @@ void test("recovery evidence requires real grounded subagents and a self-hashed 
   assert.equal(evidence.sandboxId, "sandbox-real");
   assert.equal(evidence.subagentThreadIds.length, 3);
   assert.equal(evidence.sandboxResult.candidates.length, 3);
+
+  const rootMessage = events.find(
+    (event): event is TrueForgeApi.ModelMessageEvent =>
+      event.type === "model.message" && event.threadId === "main",
+  )!;
+  const execCall = rootMessage.toolCalls!.find((item) => item.id === "exec-1")!;
+  const originalArguments = execCall.function.arguments;
+  execCall.function.arguments = JSON.stringify({ command: "echo unrelated" });
+  assert.throws(
+    () => analyzeRecoveryEvidence(events, { requireSubagents: true }),
+    /Runtime-generated recovery Python/,
+  );
+  execCall.function.arguments = originalArguments;
 
   const aircraftMessage = events.find(
     (event): event is TrueForgeApi.ModelMessageEvent =>

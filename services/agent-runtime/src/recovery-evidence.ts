@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 import type { TrueForgeApi } from "@truefoundry/trueforge-sdk";
 
+import { isGeneratedPythonExecution } from "./event-evidence.js";
+
 export interface SandboxRecoveryResult {
   artifactHash: string;
   artifactSourceBase64: string;
@@ -149,6 +151,11 @@ export function analyzeRecoveryEvidence(
     ({ call, threadId }) =>
       threadId === "main" && call.toolInfo.name === "exec",
   );
+  const generatedPythonCalls = execCalls.filter(
+    ({ call }) =>
+      isGeneratedPythonExecution(call) &&
+      String(parsedArguments(call)?.command).includes("recovery_problem.py"),
+  );
   const responseByCall = new Map(
     events
       .filter(
@@ -157,7 +164,7 @@ export function analyzeRecoveryEvidence(
       )
       .map((event) => [event.toolCallId, event]),
   );
-  const completed = execCalls.flatMap(({ call }) => {
+  const completed = generatedPythonCalls.flatMap(({ call }) => {
     const response = responseByCall.get(call.id);
     if (!response) return [];
     const result = successfulResult(response);
@@ -165,7 +172,11 @@ export function analyzeRecoveryEvidence(
     const sandboxResult = parseSandboxResult(result);
     return sandboxResult ? [{ call, sandboxResult }] : [];
   });
-  if (execCalls.length > 2 || completed.length !== 1) {
+  if (
+    execCalls.length !== generatedPythonCalls.length ||
+    generatedPythonCalls.length > 2 ||
+    completed.length !== 1
+  ) {
     throw new Error(
       "Runtime-generated recovery Python did not complete within the single bounded repair",
     );
@@ -195,7 +206,7 @@ export function analyzeRecoveryEvidence(
   }
   return {
     artifactSource,
-    codeModeExecCallIds: execCalls.map(({ call }) => call.id),
+    codeModeExecCallIds: generatedPythonCalls.map(({ call }) => call.id),
     sandboxId: sandboxEvent.sandboxId,
     sandboxResult: completedResult.sandboxResult,
     subagentThreadIds: childThreads.map((event) => event.threadId),
