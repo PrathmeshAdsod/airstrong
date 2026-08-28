@@ -40,6 +40,22 @@ Parameter exploration is deterministic but outcome-neutral. It starts with the m
 
 Candidate generation, authoritative validation, and the versioned lexicographic objective are specified in [recovery-objective.md](recovery-objective.md). Solver weights create proposal diversity; they never replace the twin or select the recommendation.
 
+## Approval, execution, and reconnect boundary
+
+Every recovery run is durable before TrueForge starts. The run stores its starting world revision and snapshot hash, then records the TrueForge session and investigation turn as soon as they exist. Candidate evaluation attaches only a batch from that same world, revision, and snapshot.
+
+The backend, not the model, creates an approval for the rank-one valid candidate. Its exact stored actions are hashed and summarized. TrueForge receives those identifiers, emits `tool.approval_required` for `airline_apply_recovery`, and persists the thread, tool call, event, and turn identifiers. A restarted runtime can recover that same pause without creating another run or call.
+
+The airline MCP rejects the consequential tool unless all of these facts still agree:
+
+- the approval decision is `approved`;
+- the candidate is still the stored deterministic recommendation;
+- the world revision and snapshot hash match the approved snapshot;
+- the action payload matches its plan hash;
+- the idempotency key has not already produced another execution.
+
+One database transaction applies the stored actions and advances the world revision once. A second MCP tool then re-reads every affected flight, confirms the applied revision and single-execution invariant, and persists factual verification. Denied or stale runs cannot write. Replays return the existing execution or verification instead of applying work again.
+
 ## Safe usage controls
 
 These controls preserve the approved architecture:

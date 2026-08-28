@@ -20,6 +20,8 @@ def _capacity_root_flights(snapshot: WorldSnapshot, disruption: Disruption) -> s
     permitted = max(1, floor(airport.hourly_capacity * disruption.capacity_multiplier))
     movements: dict[datetime, list[tuple[datetime, str]]] = defaultdict(list)
     for flight in snapshot.flights:
+        if flight.status == "cancelled":
+            continue
         if (
             flight.origin == disruption.airport_code
             and disruption.starts_at <= flight.scheduled_departure < disruption.ends_at
@@ -48,7 +50,8 @@ def _aircraft_root_flights(snapshot: WorldSnapshot, disruption: Disruption) -> s
     return {
         flight.flight_id
         for flight in snapshot.flights
-        if flight.aircraft_id == disruption.aircraft_id
+        if flight.status != "cancelled"
+        and flight.aircraft_id == disruption.aircraft_id
         and disruption.starts_at <= flight.scheduled_departure < disruption.ends_at
     }
 
@@ -60,6 +63,8 @@ def _rotation_impacts(
 ) -> list[OperationalImpact]:
     rotations: dict[str, list[Flight]] = defaultdict(list)
     for flight in flights:
+        if flight.status == "cancelled":
+            continue
         rotations[flight.aircraft_id].append(flight)
     impacts: dict[str, OperationalImpact] = {}
     for rotation in rotations.values():
