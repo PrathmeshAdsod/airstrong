@@ -7,13 +7,15 @@ import type { ReactNode } from "react";
 import { dashboardNavigation } from "@/lib/navigation";
 
 import { Brand } from "./brand";
+import { useWorld, WorldProvider } from "./world-provider";
 
 type ProductShellProps = {
   children: ReactNode;
 };
 
-export function ProductShell({ children }: ProductShellProps) {
+function ProductFrame({ children }: ProductShellProps) {
   const pathname = usePathname();
+  const { streamState, world } = useWorld();
 
   return (
     <div className="product-shell">
@@ -37,15 +39,26 @@ export function ProductShell({ children }: ProductShellProps) {
         </nav>
         <div
           className="world-badge"
-          aria-label="Aliens Airline simulation world"
+          aria-label={`${world?.displayName ?? "Aliens Airline"} simulation world, event stream ${streamState}`}
         >
-          <span className="world-badge__dot" aria-hidden="true" />
-          <strong>Aliens Airline</strong>
+          <span
+            className={`world-badge__dot world-badge__dot--${streamState}`}
+            aria-hidden="true"
+          />
+          <strong>{world?.displayName ?? "Aliens Airline"}</strong>
           <span aria-hidden="true">·</span>
           <span>Simulation</span>
         </div>
       </header>
       <main className="product-main">{children}</main>
     </div>
+  );
+}
+
+export function ProductShell({ children }: ProductShellProps) {
+  return (
+    <WorldProvider>
+      <ProductFrame>{children}</ProductFrame>
+    </WorldProvider>
   );
 }

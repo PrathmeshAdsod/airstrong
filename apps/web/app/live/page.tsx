@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { FoundationState } from "@/components/foundation-state";
+import { LiveView } from "@/components/live-view";
 import { PageIntro } from "@/components/page-intro";
 import { ProductShell } from "@/components/product-shell";
 
@@ -14,11 +14,7 @@ export default function LivePage() {
         title="Live network"
         description="The current airline world and the factual impact of active disruptions."
       />
-      <FoundationState
-        index="01"
-        title="Waiting for an authoritative world connection"
-        description="PR1 does not invent network state. The live map and disruption facts will render only after the airline API and durable event stream are connected."
-      />
+      <LiveView />
     </ProductShell>
   );
 }
