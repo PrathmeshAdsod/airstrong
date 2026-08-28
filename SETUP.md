@@ -156,7 +156,7 @@ PostgreSQL and Redis remain separate infrastructure services. Do not replace the
 
 ### Vercel
 
-Import the repository as one Vercel project. The checked-in `vercel.json` selects only `apps/web` as the Vercel service and does not force a static export.
+Import the repository as one Vercel project. The checked-in `vercel.json` selects only `apps/web` as the Vercel service and routes public traffic to it with an explicit catch-all rewrite. It does not force a static export.
 
 Set these server-side production variables:
 
