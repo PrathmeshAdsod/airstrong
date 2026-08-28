@@ -195,15 +195,16 @@ async def get_snapshot(request: Request) -> JSONResponse:
 @mcp.custom_route("/api/worlds/{world_id}/data/{section}", methods=["GET"])
 async def get_data(request: Request) -> JSONResponse:
     try:
-        world_id = _world_id(request.path_params["world_id"])
-        with connect(_database_url()) as connection:
-            return JSONResponse(
-                {
-                    "worldId": str(world_id),
-                    "section": request.path_params["section"],
-                    "items": data_view(connection, world_id, request.path_params["section"]),
-                }
-            )
+        section = request.path_params["section"]
+
+        def view(connection: DbConnection, world_id: UUID) -> dict[str, Any]:
+            return {
+                "worldId": str(world_id),
+                "section": section,
+                "items": data_view(connection, world_id, section),
+            }
+
+        return JSONResponse(_with_database(view, request.path_params["world_id"]))
     except Exception as error:
         return _error_response(error)
 
