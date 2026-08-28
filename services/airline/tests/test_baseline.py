@@ -35,15 +35,26 @@ def test_versioned_baseline_is_internally_coherent() -> None:
 
 def test_validation_rejects_an_impossible_aircraft_turnaround() -> None:
     snapshot = baseline_snapshot()
+    target_flight_id = "ALN-1003"
     flights = tuple(
         replace(flight, scheduled_departure=flight.scheduled_departure.replace(hour=6, minute=10))
-        if flight.flight_id == "ALN-1003"
+        if flight.flight_id == target_flight_id
         else flight
         for flight in snapshot.flights
     )
+    isolated = replace(
+        snapshot,
+        flights=flights,
+        crew_assignments=tuple(
+            assignment for assignment in snapshot.crew_assignments if assignment.flight_id != target_flight_id
+        ),
+        itinerary_legs=tuple(leg for leg in snapshot.itinerary_legs if leg.flight_id != target_flight_id),
+    )
 
-    with pytest.raises(WorldValidationError, match="turnaround"):
-        validate_world(replace(snapshot, flights=flights))
+    with pytest.raises(WorldValidationError) as raised:
+        validate_world(isolated)
+
+    assert str(raised.value) == "ALN-A01: turnaround before ALN-1003 is too short"
 
 
 def test_validation_rejects_insufficient_pre_duty_rest() -> None:
