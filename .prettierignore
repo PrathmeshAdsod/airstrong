@@ -5,7 +5,10 @@ out/
 dist/
 coverage/
 *.lock
+package-lock.json
 .editorconfig
+.env.example
 .gitignore
 .node-version
+.prettierignore
 LICENSE

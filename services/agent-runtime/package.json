@@ -1,0 +1,29 @@
+{
+  "name": "@airstrong/agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run lint && npm run typecheck && npm run test",
+    "compatibility:prove": "tsx src/compatibility-proof.ts",
+    "compatibility:verify-persistence": "tsx src/verify-persistence.ts",
+    "lint": "eslint . --max-warnings=0",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@truefoundry/trueforge-sdk": "0.1.3",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.4",
+    "@types/node": "24.12.0",
+    "@types/pg": "8.20.0",
+    "eslint": "9.39.4",
+    "globals": "17.4.0",
+    "tsx": "4.23.12",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.57.1"
+  }
+}

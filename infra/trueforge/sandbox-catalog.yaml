@@ -1,0 +1,6 @@
+providers:
+  - type: daytona
+    exec_timeout_ms: 60000
+    auto_stop_interval_in_minutes: 5
+    auto_archive_interval_in_minutes: 30
+    auto_delete_interval_in_minutes: 120

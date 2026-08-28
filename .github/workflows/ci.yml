@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+
+  compatibility-mcp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.27"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - working-directory: services/compatibility-mcp
+        run: uv sync --frozen
+      - working-directory: services/compatibility-mcp
+        run: uv run pytest
+      - working-directory: services/compatibility-mcp
+        run: uv run python -m compileall -q src
+      - run: docker compose -f docker-compose.compatibility.yml config --quiet
