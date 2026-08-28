@@ -17,8 +17,8 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-from airstrong_airline.database import connect, migrate
-from airstrong_airline.server import initialize_database, mcp
+from airstrong_airline.database import DbConnection, connect, migrate
+from airstrong_airline.server import _with_database, initialize_database, mcp
 
 DATABASE_URL = os.getenv("AIRSTRONG_TEST_DATABASE_URL")
 pytestmark = pytest.mark.integration
@@ -104,6 +104,38 @@ def api_world(server_url: str) -> Iterator[tuple[str, UUID]]:
 
 def _event_ids(body: str) -> list[int]:
     return [int(line.removeprefix("id: ")) for line in body.splitlines() if line.startswith("id: ")]
+
+
+def test_rest_rejects_non_object_json_as_invalid_request(server_url: str) -> None:
+    with httpx.Client(base_url=server_url, timeout=10) as client:
+        response = client.post(
+            "/api/worlds",
+            headers={"Idempotency-Key": f"invalid-body-{uuid4()}"},
+            json=None,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "invalid_request"
+
+
+def test_consistent_views_use_repeatable_read(server_url: str) -> None:
+    del server_url
+
+    def isolation_level(connection: DbConnection, world_id: UUID) -> str:
+        del world_id
+        row = connection.execute("SHOW transaction_isolation").fetchone()
+        assert row is not None
+        return row["transaction_isolation"]
+
+    assert _with_database(isolation_level, str(uuid4())) == "repeatable read"
+
+
+def test_sse_rejects_unknown_world_before_opening_stream(server_url: str) -> None:
+    with httpx.Client(base_url=server_url, timeout=10) as client:
+        response = client.get(f"/api/worlds/{uuid4()}/events")
+
+    assert response.status_code == 404
+    assert response.json()["error"] == "not_found"
 
 
 def test_rest_data_and_scenario_mutation_are_authoritative(api_world: tuple[str, UUID]) -> None:

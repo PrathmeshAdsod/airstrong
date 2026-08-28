@@ -22,6 +22,7 @@ from .database import (
     create_world_once,
     default_world,
     events_after,
+    load_world,
     migrate,
     reset_world,
     trigger_hero_scenario,
@@ -85,7 +86,8 @@ def _with_database(
     view: Callable[[DbConnection, UUID], Any],
     world_id: str,
 ) -> Any:
-    with connect(_database_url()) as connection:
+    with connect(_database_url()) as connection, connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         return view(connection, _world_id(world_id))
 
 
@@ -145,7 +147,9 @@ async def get_default_world(_: Request) -> JSONResponse:
     try:
         with connect(_database_url()) as connection:
             world_id = default_world(connection)
-            return JSONResponse(world_view(connection, world_id))
+            with connection.transaction():
+                connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+                return JSONResponse(world_view(connection, world_id))
     except Exception as error:
         return _error_response(error)
 
@@ -155,6 +159,8 @@ async def post_world(request: Request) -> JSONResponse:
     try:
         idempotency_key = request.headers.get("Idempotency-Key", "")
         body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
         display_name = str(body.get("displayName", "Aliens Airline"))
         with connect(_database_url()) as connection:
             world_id, replayed = create_world_once(
@@ -308,14 +314,15 @@ async def get_events(request: Request) -> Response:
         follow = request.query_params.get("follow", "true").lower() != "false"
         if after < 0:
             raise ValueError("event cursor cannot be negative")
-        if not follow:
-            with connect(_database_url()) as connection:
+        with connect(_database_url()) as connection:
+            load_world(connection, world_id)
+            if not follow:
                 replay = events_after(connection, world_id, after)
-            return StreamingResponse(
-                iter(_sse_event(event) for event in replay),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
+                return StreamingResponse(
+                    iter(_sse_event(event) for event in replay),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
         return StreamingResponse(
             _event_stream(world_id, after, follow=True),
             media_type="text/event-stream",
