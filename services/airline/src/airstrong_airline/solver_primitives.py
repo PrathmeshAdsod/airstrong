@@ -181,10 +181,16 @@ def solve_candidate(
     model.add_max_equality(max_delay, list(delay_slots.values()))
     substitution_terms: list[cp_model.LinearExpr] = []
     for original_id, rotation in scoped_by_rotation.items():
-        operated_count = len(rotation)
         for (selected_original, aircraft_id), choice in rotation_choice.items():
             if selected_original == original_id and aircraft_id != original_id:
-                substitution_terms.append(choice * operated_count)
+                for flight in rotation:
+                    reassigned_and_operated = model.new_bool_var(
+                        f"substitution_{original_id}_{aircraft_id}_{flight.flight_id}"
+                    )
+                    model.add(reassigned_and_operated <= choice)
+                    model.add(reassigned_and_operated + cancellation[flight.flight_id] <= 1)
+                    model.add(reassigned_and_operated >= choice - cancellation[flight.flight_id])
+                    substitution_terms.append(reassigned_and_operated)
     objective_terms: list[cp_model.LinearExpr] = []
     for flight_id in scope:
         objective_terms.append(
