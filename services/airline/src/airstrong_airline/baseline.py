@@ -60,6 +60,7 @@ AIRCRAFT = (
     Aircraft("ALN-A03", "A321neo", 220, "BOM", "available", _at(0), 55),
     Aircraft("ALN-A04", "A321neo", 220, "SIN", "available", _at(0), 55),
     Aircraft("ALN-A05", "A320neo", 180, "DEL", "available", _at(0), 50),
+    Aircraft("ALN-A06", "A321neo", 220, "BOM", "available", _at(0), 55),
 )
 
 FLIGHTS = (
