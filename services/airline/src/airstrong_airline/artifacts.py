@@ -16,6 +16,7 @@ from .recovery import (
     RetimeFlight,
     StrategyParameters,
     candidate_content_hash,
+    snapshot_hash,
 )
 from .twin import evaluate_candidate
 
@@ -84,6 +85,7 @@ def validated_candidates(
     )
     if not authoritative_scope:
         raise ValueError("The authoritative incident has no impacted flight scope")
+    authoritative_snapshot_hash = snapshot_hash(snapshot)
     candidates: list[CandidatePlan] = []
     action_sets: set[tuple[tuple[str, str, str], ...]] = set()
     for payload in payloads:
@@ -106,11 +108,13 @@ def validated_candidates(
         )
         if candidate.artifact_hash != artifact_hash:
             raise ValueError("Candidate artifact hash does not match submitted source")
+        if candidate.snapshot_hash != authoritative_snapshot_hash:
+            raise ValueError("Candidate snapshot hash does not match the authoritative snapshot")
         if candidate.solver_version != SOLVER_PRIMITIVES_VERSION:
             raise ValueError("Candidate solver version is not trusted")
         expected_id = candidate_content_hash(
             strategy=strategy,
-            snapshot_digest=candidate.snapshot_hash,
+            snapshot_digest=authoritative_snapshot_hash,
             artifact_hash=artifact_hash,
             scope_flight_ids=candidate.scope_flight_ids,
             actions=actions,

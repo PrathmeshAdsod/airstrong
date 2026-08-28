@@ -5,6 +5,7 @@ import type { TrueForgeApi } from "@truefoundry/trueforge-sdk";
 export interface SandboxRecoveryResult {
   artifactHash: string;
   artifactSourceBase64: string;
+  bundleHash: string;
   candidates: unknown[];
   snapshotHash: string;
   worldRevision: number;
@@ -59,6 +60,7 @@ function parseSandboxResult(result: string): SandboxRecoveryResult | undefined {
   if (
     typeof value.artifactHash !== "string" ||
     typeof value.artifactSourceBase64 !== "string" ||
+    typeof value.bundleHash !== "string" ||
     !Array.isArray(value.candidates) ||
     typeof value.snapshotHash !== "string" ||
     !Number.isInteger(value.worldRevision)
@@ -96,9 +98,18 @@ export function analyzeRecoveryEvidence(
     const childByName = new Map(
       childThreads.map((event) => [event.agentInfo.name, event]),
     );
+    const childThreadIds = new Set(childThreads.map((event) => event.threadId));
     if (
       subagentCalls.length !== 3 ||
       childThreads.length !== 3 ||
+      childByName.size !== 3 ||
+      childThreadIds.size !== 3 ||
+      subagentCalls.some(({ threadId }) => threadId !== "main") ||
+      childThreads.some(
+        (event) =>
+          event.agentInfo.type !== "dynamic" ||
+          event.parent.threadId !== "main",
+      ) ||
       [...requiredByName].some(([name]) => {
         const child = childByName.get(name);
         if (!child) return true;

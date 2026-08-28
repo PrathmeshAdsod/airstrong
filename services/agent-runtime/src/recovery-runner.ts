@@ -126,13 +126,13 @@ Follow this exact workflow:
    Each dictionary must contain exactly: strategy_id, max_cancellations, max_delay_minutes, allow_aircraft_substitution, cancellation_weight, passenger_preservation_weight, delay_weight, aircraft_reassignment_weight, stabilization_weight. All counts, limits, and weights must use integer literals. Delay limits are non-negative multiples of 15. Weights are non-negative and not all zero.
 4. Enter Code Mode. Do not inspect tools or data with exploratory exec calls. Your first and only normal exec call must use a quoted heredoc to create the complete new recovery_problem.py and then run python3 recovery_problem.py. The Python must:
    - import asyncio, base64, hashlib, json, pathlib, subprocess, sys, and call_tool from mcp_client;
-   - call airline_solver_bundle from ${MCP_NAME}; its files field is a mapping of relative path to source text and requirements is a list of pinned packages; write every mapping entry under generated_lib and install only those exact requirements with subprocess.check_call;
+   - call airline_solver_bundle from ${MCP_NAME}; its files field is a mapping of relative path to source text and requirements is a list of pinned packages; recompute SHA-256 over the sorted mapping using the exact canonical sequence name + "\\0" + source + "\\0" and stop unless it equals bundleHash; then write every mapping entry under generated_lib and install only those exact requirements with subprocess.check_call;
    - call airline_world_snapshot for ${worldId};
    - derive non-empty scope_flight_ids from operationalImpacts entries whose entityType equals flight, using entityId, then sort and deduplicate them;
    - define the six incident-specific strategy dictionaries in the generated source using the trusted StrategyParameters field names;
    - hash its own exact source bytes with SHA-256;
    - import solve_recovery_problem from airstrong_airline.sandbox_runtime and execute the real OR-Tools-backed trusted primitives;
-   - set solve_result = solve_recovery_problem(snapshot, scope_flight_ids, strategies, artifact_hash), then print exactly one final line beginning AIRSTRONG_RESULT= followed by compact JSON with artifactHash, artifactSourceBase64, snapshotHash set to every candidate's identical snapshotHash, worldRevision set to snapshot["worldRevision"], and candidates set to solve_result["candidates"] (the candidates field must be an array, not the solve_result object).
+   - set solve_result = solve_recovery_problem(snapshot, scope_flight_ids, strategies, artifact_hash), then print exactly one final line beginning AIRSTRONG_RESULT= followed by compact JSON with artifactHash, artifactSourceBase64, bundleHash set to the verified computed bundle digest, snapshotHash set to every candidate's identical snapshotHash, worldRevision set to snapshot["worldRevision"], and candidates set to solve_result["candidates"] (the candidates field must be an array, not the solve_result object).
    call_tool is async and must be awaited with body={}. Add generated_lib to sys.path before importing the trusted runtime. Use this exact positional call: solve_recovery_problem(snapshot, scope_flight_ids, strategies, artifact_hash). Use asyncio.run(main()).
 5. A single repair exec of recovery_problem.py is allowed only if that complete execution fails. After success, stop. Do not call airline_recovery_candidates, rank candidates, call recovery writes, request approval, or claim a winner.`;
 }
@@ -242,8 +242,13 @@ export async function runRecovery(
     turn.data.id,
     { limit: 100 },
   );
-  const completeEvents: TrueForgeApi.TurnStreamingEvent[] = [];
-  for await (const event of persistedEvents) completeEvents.push(event);
+  const completeEvents: TrueForgeApi.TurnStreamingEvent[] = [
+    ...persistedEvents.data,
+  ];
+  while (persistedEvents.hasNextPage()) {
+    await persistedEvents.getNextPage();
+    completeEvents.push(...persistedEvents.data);
+  }
   const evidence = analyzeRecoveryEvidence(completeEvents, {
     requireSubagents: true,
   });

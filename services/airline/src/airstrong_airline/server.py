@@ -263,6 +263,9 @@ async def post_recovery_evaluate(request: Request) -> JSONResponse:
             snapshot = load_snapshot(connection, world_id)
             if snapshot_hash(snapshot) != expected_snapshot_hash:
                 raise ValueError("World snapshot changed while recovery computation was running")
+            trusted_bundle_hash = str(solver_bundle()["bundleHash"])
+            if sandbox_result.get("bundleHash") != trusted_bundle_hash:
+                raise ValueError("Sandbox solver bundle does not match the trusted bundle")
             artifact_hash = persist_generated_artifact(
                 connection,
                 snapshot,

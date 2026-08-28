@@ -91,6 +91,7 @@ void test("recovery evidence requires real grounded subagents and a self-hashed 
           result: `AIRSTRONG_RESULT=${JSON.stringify({
             artifactHash,
             artifactSourceBase64: Buffer.from(source).toString("base64"),
+            bundleHash: "b".repeat(64),
             candidates: [{}, {}, {}],
             snapshotHash: "a".repeat(64),
             worldRevision: 1,

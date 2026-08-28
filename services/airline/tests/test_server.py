@@ -18,6 +18,7 @@ import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from airstrong_airline.artifacts import solver_bundle
 from airstrong_airline.database import DbConnection, connect, load_impacts, load_snapshot, migrate
 from airstrong_airline.recovery import StrategyParameters, snapshot_hash
 from airstrong_airline.sandbox_runtime import candidate_payload
@@ -290,6 +291,7 @@ def test_runtime_artifact_is_verified_then_authoritative_twin_ranks(
     candidates = generate_candidates(snapshot, scope, strategies, artifact_hash=artifact_hash)
     sandbox_result = {
         "artifactHash": artifact_hash,
+        "bundleHash": solver_bundle()["bundleHash"],
         "candidates": [candidate_payload(candidate) for candidate in candidates],
     }
 
