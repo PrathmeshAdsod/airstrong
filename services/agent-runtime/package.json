@@ -9,6 +9,7 @@
     "compatibility:prove": "tsx src/compatibility-proof.ts",
     "compatibility:verify-persistence": "tsx src/verify-persistence.ts",
     "lint": "eslint . --max-warnings=0",
+    "recovery:decide": "tsx src/decide-recovery.ts",
     "recovery:run": "tsx src/run-recovery.ts",
     "test": "node --import tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"

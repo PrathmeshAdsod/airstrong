@@ -20,18 +20,29 @@ from .artifacts import evaluate_generated_candidates, solver_bundle, validated_c
 from .database import (
     DbConnection,
     DbRow,
+    apply_approved_recovery,
+    attach_recovery_batch_to_run,
     connect,
+    create_recovery_run,
     create_world_once,
+    decide_recovery_approval,
     default_world,
     events_after,
+    link_recovery_approval_continuation,
+    link_recovery_execution_turn,
+    link_recovery_investigation_turn,
     load_snapshot,
     load_world,
     migrate,
     persist_generated_artifact,
     persist_recovery_batch,
     recovery_batch_by_id,
+    record_trueforge_approval_request,
+    recovery_run,
+    request_recovery_approval,
     reset_world,
     trigger_hero_scenario,
+    verify_recovery_execution,
 )
 from .recovery import snapshot_hash
 from .views import (
@@ -47,6 +58,18 @@ from .views import (
 
 READ_ONLY = ToolAnnotations(
     read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+CONSEQUENTIAL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+VERIFICATION = ToolAnnotations(
+    read_only_hint=False,
     destructive_hint=False,
     idempotent_hint=True,
     open_world_hint=False,
@@ -145,6 +168,46 @@ def airline_solver_bundle() -> dict[str, Any]:
     return solver_bundle()
 
 
+@mcp.tool(annotations=CONSEQUENTIAL)
+def airline_apply_recovery(
+    world_id: Annotated[str, Field(min_length=36, max_length=36)],
+    run_id: Annotated[str, Field(min_length=36, max_length=36)],
+    approval_id: Annotated[str, Field(min_length=36, max_length=36)],
+    candidate_id: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")],
+    expected_world_revision: Annotated[int, Field(ge=0)],
+    idempotency_key: Annotated[str, Field(min_length=8, max_length=128)],
+) -> dict[str, Any]:
+    """Apply the stored approved recovery atomically; rejects unapproved, stale, or altered plans."""
+    with connect(_database_url()) as connection:
+        result = apply_approved_recovery(
+            connection,
+            world_id=_world_id(world_id),
+            run_id=_world_id(run_id),
+            approval_id=_world_id(approval_id),
+            candidate_id=candidate_id,
+            expected_world_revision=expected_world_revision,
+            idempotency_key=idempotency_key,
+        )
+        return public_value(result)
+
+
+@mcp.tool(annotations=VERIFICATION)
+def airline_verify_recovery(
+    world_id: Annotated[str, Field(min_length=36, max_length=36)],
+    run_id: Annotated[str, Field(min_length=36, max_length=36)],
+    execution_id: Annotated[str, Field(min_length=36, max_length=36)],
+) -> dict[str, Any]:
+    """Re-read authoritative state, verify every applied action, and persist factual verification."""
+    with connect(_database_url()) as connection:
+        result = verify_recovery_execution(
+            connection,
+            world_id=_world_id(world_id),
+            run_id=_world_id(run_id),
+            execution_id=_world_id(execution_id),
+        )
+        return public_value(result)
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
     try:
@@ -234,6 +297,140 @@ async def get_recovery(request: Request) -> JSONResponse:
         return _error_response(error)
 
 
+@mcp.custom_route("/api/worlds/{world_id}/recovery/runs", methods=["POST"])
+async def post_recovery_run(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        world_id = _world_id(request.path_params["world_id"])
+        idempotency_key = request.headers.get("Idempotency-Key", "")
+        with connect(_database_url()) as connection:
+            run, replayed = create_recovery_run(
+                connection,
+                world_id,
+                idempotency_key=idempotency_key,
+            )
+            return JSONResponse(
+                {"run": public_value(recovery_run(connection, run["run_id"])), "replayed": replayed},
+                status_code=200 if replayed else 201,
+            )
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}", methods=["GET"])
+async def get_recovery_run(request: Request) -> JSONResponse:
+    try:
+        run_id = _world_id(request.path_params["run_id"])
+        with connect(_database_url()) as connection:
+            return JSONResponse({"run": public_value(recovery_run(connection, run_id))})
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}/trueforge/investigation", methods=["POST"])
+async def post_recovery_investigation_link(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        with connect(_database_url()) as connection:
+            run = link_recovery_investigation_turn(
+                connection,
+                _world_id(request.path_params["run_id"]),
+                trueforge_session_id=str(body["trueforgeSessionId"]),
+                investigation_turn_id=str(body["investigationTurnId"]),
+            )
+            return JSONResponse({"run": public_value(run)})
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}/approval", methods=["POST"])
+async def post_recovery_approval(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        with connect(_database_url()) as connection:
+            run = request_recovery_approval(connection, _world_id(request.path_params["run_id"]))
+            return JSONResponse({"run": public_value(run)}, status_code=201)
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}/approval/trueforge", methods=["POST"])
+async def post_recovery_approval_link(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        with connect(_database_url()) as connection:
+            run = record_trueforge_approval_request(
+                connection,
+                _world_id(request.path_params["run_id"]),
+                execution_turn_id=str(body["executionTurnId"]),
+                thread_id=str(body["threadId"]),
+                tool_call_id=str(body["toolCallId"]),
+                approval_event_id=str(body["approvalEventId"]),
+            )
+            return JSONResponse({"run": public_value(run)})
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}/trueforge/execution", methods=["POST"])
+async def post_recovery_execution_turn_link(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        with connect(_database_url()) as connection:
+            run = link_recovery_execution_turn(
+                connection,
+                _world_id(request.path_params["run_id"]),
+                execution_turn_id=str(body["executionTurnId"]),
+            )
+            return JSONResponse({"run": public_value(run)})
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}/trueforge/continuation", methods=["POST"])
+async def post_recovery_continuation_turn_link(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        with connect(_database_url()) as connection:
+            run = link_recovery_approval_continuation(
+                connection,
+                _world_id(request.path_params["run_id"]),
+                continuation_turn_id=str(body["continuationTurnId"]),
+            )
+            return JSONResponse({"run": public_value(run)})
+    except Exception as error:
+        return _error_response(error)
+
+
+@mcp.custom_route("/api/recovery/runs/{run_id}/approval/decision", methods=["POST"])
+async def post_recovery_approval_decision(request: Request) -> JSONResponse:
+    if not _authorized_runtime(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        idempotency_key = request.headers.get("Idempotency-Key", "")
+        with connect(_database_url()) as connection:
+            run = decide_recovery_approval(
+                connection,
+                _world_id(request.path_params["run_id"]),
+                decision=str(body["decision"]),
+                idempotency_key=idempotency_key,
+            )
+            return JSONResponse({"run": public_value(run)})
+    except Exception as error:
+        return _error_response(error)
+
+
 def _authorized_runtime(request: Request) -> bool:
     expected = os.getenv("AIRSTRONG_RUNTIME_TOKEN", "").strip()
     supplied = request.headers.get("Authorization", "")
@@ -284,6 +481,8 @@ async def post_recovery_evaluate(request: Request) -> JSONResponse:
             )
             evaluations, ranked = evaluate_generated_candidates(snapshot, candidates)
             batch_id = persist_recovery_batch(connection, snapshot, candidates, evaluations, ranked)
+            if "runId" in body:
+                attach_recovery_batch_to_run(connection, _world_id(str(body["runId"])), batch_id)
             batch = recovery_batch_by_id(connection, world_id, batch_id)
             if batch is None:
                 raise RuntimeError("Persisted recovery batch could not be read")

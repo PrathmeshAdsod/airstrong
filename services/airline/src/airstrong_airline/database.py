@@ -33,6 +33,7 @@ from .recovery import (
     CandidateEvaluation,
     CandidatePlan,
     action_payload,
+    canonical_json,
     snapshot_hash,
     snapshot_payload,
 )
@@ -1017,3 +1018,673 @@ def persist_generated_artifact(
         ):
             raise ValueError("Generated artifact lineage conflicts with an existing execution")
     return artifact_hash
+
+
+def create_recovery_run(
+    connection: DbConnection,
+    world_id: UUID,
+    *,
+    idempotency_key: str,
+) -> tuple[DbRow, bool]:
+    normalized = idempotency_key.strip()
+    if not 8 <= len(normalized) <= 128:
+        raise ValueError("idempotency_key must contain 8 to 128 characters")
+    with connection.transaction():
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (normalized,))
+        existing = connection.execute(
+            "SELECT * FROM airline_recovery_runs WHERE world_id = %s AND idempotency_key = %s",
+            (world_id, normalized),
+        ).fetchone()
+        if existing is not None:
+            return existing, True
+        snapshot = load_snapshot(connection, world_id)
+        digest = snapshot_hash(snapshot)
+        existing_revision = connection.execute(
+            "SELECT * FROM airline_recovery_runs WHERE world_id = %s AND started_world_revision = %s",
+            (world_id, snapshot.revision),
+        ).fetchone()
+        if existing_revision is not None:
+            return existing_revision, True
+        run_id = uuid5(world_id, f"recovery-run:{snapshot.revision}")
+        row = connection.execute(
+            """
+            INSERT INTO airline_recovery_runs(
+                run_id, world_id, started_world_revision, snapshot_hash,
+                idempotency_key, status
+            ) VALUES (%s, %s, %s, %s, %s, 'investigating')
+            RETURNING *
+            """,
+            (run_id, world_id, snapshot.revision, digest, normalized),
+        ).fetchone()
+        assert row is not None
+        _append_event(
+            connection,
+            world_id,
+            "recovery.run_started",
+            snapshot.revision,
+            {"runId": str(run_id), "snapshotHash": digest},
+        )
+        return row, False
+
+
+def recovery_run(connection: DbConnection, run_id: UUID) -> DbRow:
+    row = connection.execute(
+        """
+        SELECT r.*,
+               a.approval_id, a.status AS approval_status, a.actions AS approval_actions,
+               a.summary AS approval_summary, a.plan_hash, a.expected_world_revision,
+               a.trueforge_thread_id,
+               a.trueforge_tool_call_id, a.trueforge_approval_event_id,
+               x.execution_id, x.applied_world_revision, x.actions AS executed_actions,
+               v.verification_id, v.valid AS verification_valid, v.facts AS verification_facts,
+               v.world_revision AS verification_world_revision
+        FROM airline_recovery_runs r
+        LEFT JOIN airline_recovery_approvals a USING (run_id)
+        LEFT JOIN airline_operational_executions x USING (run_id)
+        LEFT JOIN airline_recovery_verifications v USING (run_id)
+        WHERE r.run_id = %s
+        """,
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"Unknown recovery run {run_id}")
+    return row
+
+
+def link_recovery_investigation_turn(
+    connection: DbConnection,
+    run_id: UUID,
+    *,
+    trueforge_session_id: str,
+    investigation_turn_id: str,
+) -> DbRow:
+    with connection.transaction():
+        current = recovery_run(connection, run_id)
+        if current["trueforge_session_id"] not in (None, trueforge_session_id):
+            raise ValueError("Recovery run is already linked to another TrueForge session")
+        if current["investigation_turn_id"] not in (None, investigation_turn_id):
+            raise ValueError("Recovery run is already linked to another investigation turn")
+        connection.execute(
+            """
+            UPDATE airline_recovery_runs
+            SET trueforge_session_id = %s, investigation_turn_id = %s,
+                status = 'computing', updated_at = now()
+            WHERE run_id = %s
+            """,
+            (trueforge_session_id, investigation_turn_id, run_id),
+        )
+        return recovery_run(connection, run_id)
+
+
+def attach_recovery_batch_to_run(
+    connection: DbConnection,
+    run_id: UUID,
+    batch_id: UUID,
+) -> DbRow:
+    with connection.transaction():
+        run = recovery_run(connection, run_id)
+        batch = connection.execute(
+            "SELECT * FROM airline_recovery_batches WHERE batch_id = %s",
+            (batch_id,),
+        ).fetchone()
+        if batch is None:
+            raise KeyError(f"Unknown recovery batch {batch_id}")
+        if batch["world_id"] != run["world_id"]:
+            raise ValueError("Recovery batch belongs to another world")
+        if batch["world_revision"] != run["started_world_revision"]:
+            raise ValueError("Recovery batch was generated for another world revision")
+        if batch["snapshot_hash"] != run["snapshot_hash"]:
+            raise ValueError("Recovery batch snapshot does not match the recovery run")
+        recommended = connection.execute(
+            """
+            SELECT c.candidate_id
+            FROM airline_recovery_candidates c
+            JOIN airline_candidate_evaluations e USING (candidate_id)
+            WHERE c.batch_id = %s AND e.valid AND e.recommended AND e.rank = 1
+            """,
+            (batch_id,),
+        ).fetchone()
+        status = "candidates_ranked" if recommended is not None else "no_valid_candidate"
+        connection.execute(
+            """
+            UPDATE airline_recovery_runs
+            SET batch_id = %s, recommended_candidate_id = %s, status = %s,
+                updated_at = now()
+            WHERE run_id = %s
+            """,
+            (
+                batch_id,
+                recommended["candidate_id"] if recommended is not None else None,
+                status,
+                run_id,
+            ),
+        )
+        return recovery_run(connection, run_id)
+
+
+def _approval_summary(actions: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "flightChanges": len({str(action["flight_id"]) for action in actions}),
+        "cancellations": sum(action.get("action_type") == "cancel_flight" for action in actions),
+        "retimings": sum(action.get("action_type") == "retime_flight" for action in actions),
+        "aircraftReassignments": sum(action.get("action_type") == "reassign_aircraft" for action in actions),
+    }
+
+
+def request_recovery_approval(connection: DbConnection, run_id: UUID) -> DbRow:
+    stale = False
+    with connection.transaction():
+        preflight = recovery_run(connection, run_id)
+        world_revision = load_world(connection, preflight["world_id"])["revision"]
+        if world_revision != preflight["started_world_revision"]:
+            connection.execute(
+                "UPDATE airline_recovery_runs SET status = 'stale', updated_at = now() WHERE run_id = %s",
+                (run_id,),
+            )
+            stale = True
+    if stale:
+        raise ValueError("World revision changed before approval; recomputation is required")
+    with connection.transaction():
+        run = recovery_run(connection, run_id)
+        if run["approval_id"] is not None:
+            return run
+        if run["status"] != "candidates_ranked" or run["recommended_candidate_id"] is None:
+            raise ValueError("Recovery run has no deterministically recommended valid candidate")
+        world = load_world(connection, run["world_id"])
+        if world["revision"] != run["started_world_revision"]:
+            raise ValueError("World revision changed before approval; recomputation is required")
+        candidate = connection.execute(
+            """
+            SELECT c.actions, c.snapshot_hash, e.valid, e.recommended, e.rank
+            FROM airline_recovery_candidates c
+            JOIN airline_candidate_evaluations e USING (candidate_id)
+            WHERE c.candidate_id = %s AND c.batch_id = %s
+            """,
+            (run["recommended_candidate_id"], run["batch_id"]),
+        ).fetchone()
+        if (
+            candidate is None
+            or not candidate["valid"]
+            or not candidate["recommended"]
+            or candidate["rank"] != 1
+        ):
+            raise ValueError("Candidate is not the authoritative deterministic recommendation")
+        actions = list(candidate["actions"])
+        plan_hash = hashlib.sha256(canonical_json(actions).encode()).hexdigest()
+        approval_id = uuid5(run_id, f"approval:{run['recommended_candidate_id']}:{plan_hash}")
+        connection.execute(
+            """
+            INSERT INTO airline_recovery_approvals(
+                approval_id, run_id, world_id, candidate_id, expected_world_revision,
+                snapshot_hash, plan_hash, actions, summary
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                approval_id,
+                run_id,
+                run["world_id"],
+                run["recommended_candidate_id"],
+                run["started_world_revision"],
+                candidate["snapshot_hash"],
+                plan_hash,
+                Jsonb(actions),
+                Jsonb(_approval_summary(actions)),
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE airline_recovery_runs
+            SET status = 'awaiting_approval', updated_at = now()
+            WHERE run_id = %s
+            """,
+            (run_id,),
+        )
+        _append_event(
+            connection,
+            run["world_id"],
+            "recovery.approval_requested",
+            run["started_world_revision"],
+            {
+                "runId": str(run_id),
+                "approvalId": str(approval_id),
+                "candidateId": run["recommended_candidate_id"],
+                "planHash": plan_hash,
+                "summary": _approval_summary(actions),
+            },
+        )
+        return recovery_run(connection, run_id)
+
+
+def record_trueforge_approval_request(
+    connection: DbConnection,
+    run_id: UUID,
+    *,
+    execution_turn_id: str,
+    thread_id: str,
+    tool_call_id: str,
+    approval_event_id: str,
+) -> DbRow:
+    with connection.transaction():
+        run = recovery_run(connection, run_id)
+        if run["status"] != "awaiting_approval":
+            raise ValueError("Recovery run is not awaiting approval")
+        if run["execution_turn_id"] not in (None, execution_turn_id):
+            raise ValueError("Recovery run is already linked to another execution turn")
+        connection.execute(
+            """
+            UPDATE airline_recovery_runs
+            SET execution_turn_id = %s, updated_at = now()
+            WHERE run_id = %s
+            """,
+            (execution_turn_id, run_id),
+        )
+        connection.execute(
+            """
+            UPDATE airline_recovery_approvals
+            SET trueforge_thread_id = %s, trueforge_tool_call_id = %s,
+                trueforge_approval_event_id = %s
+            WHERE run_id = %s
+            """,
+            (thread_id, tool_call_id, approval_event_id, run_id),
+        )
+        return recovery_run(connection, run_id)
+
+
+def link_recovery_execution_turn(
+    connection: DbConnection,
+    run_id: UUID,
+    *,
+    execution_turn_id: str,
+) -> DbRow:
+    with connection.transaction():
+        run = recovery_run(connection, run_id)
+        if run["status"] != "awaiting_approval":
+            raise ValueError("Recovery run is not awaiting approval")
+        if run["execution_turn_id"] not in (None, execution_turn_id):
+            raise ValueError("Recovery run is already linked to another execution turn")
+        connection.execute(
+            """
+            UPDATE airline_recovery_runs SET execution_turn_id = %s, updated_at = now()
+            WHERE run_id = %s
+            """,
+            (execution_turn_id, run_id),
+        )
+        return recovery_run(connection, run_id)
+
+
+def link_recovery_approval_continuation(
+    connection: DbConnection,
+    run_id: UUID,
+    *,
+    continuation_turn_id: str,
+) -> DbRow:
+    with connection.transaction():
+        run = recovery_run(connection, run_id)
+        if run["approval_continuation_turn_id"] not in (None, continuation_turn_id):
+            raise ValueError("Recovery run is already linked to another approval continuation")
+        connection.execute(
+            """
+            UPDATE airline_recovery_runs
+            SET approval_continuation_turn_id = %s, updated_at = now()
+            WHERE run_id = %s
+            """,
+            (continuation_turn_id, run_id),
+        )
+        return recovery_run(connection, run_id)
+
+
+def decide_recovery_approval(
+    connection: DbConnection,
+    run_id: UUID,
+    *,
+    decision: str,
+    idempotency_key: str,
+) -> DbRow:
+    normalized = idempotency_key.strip()
+    if decision not in {"approved", "denied"}:
+        raise ValueError("decision must be approved or denied")
+    if not 8 <= len(normalized) <= 128:
+        raise ValueError("idempotency_key must contain 8 to 128 characters")
+    with connection.transaction():
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (normalized,))
+        run = recovery_run(connection, run_id)
+        if run["approval_status"] in {"approved", "denied", "consumed"}:
+            existing = connection.execute(
+                "SELECT decision_idempotency_key FROM airline_recovery_approvals WHERE run_id = %s",
+                (run_id,),
+            ).fetchone()
+            if existing is not None and existing["decision_idempotency_key"] == normalized:
+                return run
+            raise ValueError("Approval has already been decided")
+        if run["approval_status"] != "pending":
+            raise ValueError("Recovery run has no pending approval")
+        connection.execute(
+            """
+            UPDATE airline_recovery_approvals
+            SET status = %s, decision_idempotency_key = %s, decided_at = now()
+            WHERE run_id = %s
+            """,
+            (decision, normalized, run_id),
+        )
+        connection.execute(
+            "UPDATE airline_recovery_runs SET status = %s, updated_at = now() WHERE run_id = %s",
+            (decision, run_id),
+        )
+        _append_event(
+            connection,
+            run["world_id"],
+            f"recovery.approval_{decision}",
+            run["started_world_revision"],
+            {"runId": str(run_id), "approvalId": str(run["approval_id"])},
+        )
+        return recovery_run(connection, run_id)
+
+
+def apply_approved_recovery(
+    connection: DbConnection,
+    *,
+    world_id: UUID,
+    run_id: UUID,
+    approval_id: UUID,
+    candidate_id: str,
+    expected_world_revision: int,
+    idempotency_key: str,
+) -> DbRow:
+    normalized = idempotency_key.strip()
+    if not 8 <= len(normalized) <= 128:
+        raise ValueError("idempotency_key must contain 8 to 128 characters")
+    with connection.transaction():
+        replay = connection.execute(
+            "SELECT * FROM airline_operational_executions WHERE idempotency_key = %s",
+            (normalized,),
+        ).fetchone()
+    if replay is not None:
+        return {**replay, "replayed": True}
+    stale = False
+    with connection.transaction():
+        preflight = connection.execute(
+            """
+            SELECT w.revision, a.expected_world_revision
+            FROM airline_recovery_approvals a
+            JOIN airline_worlds w ON w.world_id = a.world_id
+            WHERE a.approval_id = %s AND a.run_id = %s AND a.world_id = %s
+            """,
+            (approval_id, run_id, world_id),
+        ).fetchone()
+        if preflight is not None and preflight["revision"] != preflight["expected_world_revision"]:
+            connection.execute(
+                "UPDATE airline_recovery_runs SET status = 'stale', updated_at = now() WHERE run_id = %s",
+                (run_id,),
+            )
+            stale = True
+    if stale:
+        raise ValueError("World revision changed after approval; recomputation is required")
+    with connection.transaction():
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (normalized,))
+        replay = connection.execute(
+            "SELECT * FROM airline_operational_executions WHERE idempotency_key = %s",
+            (normalized,),
+        ).fetchone()
+        if replay is not None:
+            return {**replay, "replayed": True}
+        world = connection.execute(
+            "SELECT * FROM airline_worlds WHERE world_id = %s FOR UPDATE",
+            (world_id,),
+        ).fetchone()
+        if world is None:
+            raise KeyError(f"Unknown world {world_id}")
+        approval = connection.execute(
+            """
+            SELECT a.*, r.status AS run_status, r.recommended_candidate_id,
+                   e.valid, e.recommended, e.rank
+            FROM airline_recovery_approvals a
+            JOIN airline_recovery_runs r USING (run_id)
+            JOIN airline_candidate_evaluations e USING (candidate_id)
+            WHERE a.approval_id = %s AND a.run_id = %s AND a.world_id = %s
+            FOR UPDATE OF a, r
+            """,
+            (approval_id, run_id, world_id),
+        ).fetchone()
+        if approval is None:
+            raise KeyError("Unknown approval for this recovery run")
+        if approval["status"] != "approved" or approval["run_status"] != "approved":
+            raise ValueError("Consequential recovery write has not been approved")
+        if approval["candidate_id"] != candidate_id or approval["recommended_candidate_id"] != candidate_id:
+            raise ValueError("Approved candidate does not match the deterministic recommendation")
+        if not approval["valid"] or not approval["recommended"] or approval["rank"] != 1:
+            raise ValueError("Approved candidate is no longer a valid deterministic recommendation")
+        if approval["expected_world_revision"] != expected_world_revision:
+            raise ValueError("Requested world revision does not match the approval")
+        if world["revision"] != expected_world_revision:
+            raise ValueError("World revision changed after approval; recomputation is required")
+        snapshot = load_snapshot(connection, world_id)
+        if snapshot_hash(snapshot) != approval["snapshot_hash"]:
+            raise ValueError("Authoritative world does not match the approved snapshot hash")
+        actions = list(approval["actions"])
+        if hashlib.sha256(canonical_json(actions).encode()).hexdigest() != approval["plan_hash"]:
+            raise ValueError("Approved action payload does not match its plan hash")
+
+        connection.execute(
+            "UPDATE airline_recovery_runs SET status = 'executing', updated_at = now() WHERE run_id = %s",
+            (run_id,),
+        )
+        for action in actions:
+            action_type = action.get("action_type")
+            flight_id = str(action.get("flight_id", ""))
+            if action_type == "cancel_flight":
+                changed = connection.execute(
+                    """
+                    UPDATE airline_flights SET status = 'cancelled'
+                    WHERE world_id = %s AND flight_id = %s
+                    """,
+                    (world_id, flight_id),
+                ).rowcount
+            elif action_type == "retime_flight":
+                changed = connection.execute(
+                    """
+                    UPDATE airline_flights
+                    SET scheduled_departure = %s, scheduled_arrival = %s
+                    WHERE world_id = %s AND flight_id = %s
+                    """,
+                    (action["departure"], action["arrival"], world_id, flight_id),
+                ).rowcount
+            elif action_type == "reassign_aircraft":
+                changed = connection.execute(
+                    """
+                    UPDATE airline_flights f
+                    SET aircraft_id = a.aircraft_id, aircraft_type = a.aircraft_type
+                    FROM airline_aircraft a
+                    WHERE f.world_id = %s AND f.flight_id = %s
+                      AND a.world_id = f.world_id AND a.aircraft_id = %s
+                    """,
+                    (world_id, flight_id, action["aircraft_id"]),
+                ).rowcount
+            else:
+                raise ValueError(f"Unsupported approved recovery action {action_type!r}")
+            if changed != 1:
+                raise ValueError(f"Approved action did not resolve exactly one flight: {flight_id}")
+
+        revision_row = connection.execute(
+            "UPDATE airline_worlds SET revision = revision + 1 WHERE world_id = %s RETURNING revision",
+            (world_id,),
+        ).fetchone()
+        assert revision_row is not None
+        applied_revision = int(revision_row["revision"])
+        connection.execute(
+            "UPDATE airline_flights SET status = 'scheduled' WHERE world_id = %s AND status <> 'cancelled'",
+            (world_id,),
+        )
+        post_write_snapshot = load_snapshot(connection, world_id)
+        impacts = calculate_operational_impacts(post_write_snapshot)
+        impacted_flights = sorted({item.entity_id for item in impacts if item.entity_type == "flight"})
+        if impacted_flights:
+            connection.execute(
+                """
+                UPDATE airline_flights SET status = 'at_risk'
+                WHERE world_id = %s AND flight_id = ANY(%s) AND status <> 'cancelled'
+                """,
+                (world_id, impacted_flights),
+            )
+        _persist_impacts(connection, load_snapshot(connection, world_id), impacts)
+
+        execution_id = uuid5(run_id, f"execution:{approval['plan_hash']}")
+        execution = connection.execute(
+            """
+            INSERT INTO airline_operational_executions(
+                execution_id, run_id, approval_id, world_id, candidate_id,
+                idempotency_key, starting_world_revision, applied_world_revision, actions
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (
+                execution_id,
+                run_id,
+                approval_id,
+                world_id,
+                candidate_id,
+                normalized,
+                expected_world_revision,
+                applied_revision,
+                Jsonb(actions),
+            ),
+        ).fetchone()
+        assert execution is not None
+        connection.execute(
+            """
+            UPDATE airline_recovery_approvals
+            SET status = 'consumed', consumed_at = now()
+            WHERE approval_id = %s
+            """,
+            (approval_id,),
+        )
+        connection.execute(
+            "UPDATE airline_recovery_runs SET status = 'verifying', updated_at = now() WHERE run_id = %s",
+            (run_id,),
+        )
+        _append_event(
+            connection,
+            world_id,
+            "recovery.applied",
+            applied_revision,
+            {
+                "runId": str(run_id),
+                "executionId": str(execution_id),
+                "candidateId": candidate_id,
+                "actions": actions,
+                "planHash": approval["plan_hash"],
+            },
+        )
+        return {**execution, "replayed": False}
+
+
+def verify_recovery_execution(
+    connection: DbConnection,
+    *,
+    world_id: UUID,
+    run_id: UUID,
+    execution_id: UUID,
+) -> DbRow:
+    with connection.transaction():
+        existing = connection.execute(
+            "SELECT * FROM airline_recovery_verifications WHERE execution_id = %s",
+            (execution_id,),
+        ).fetchone()
+        if existing is not None:
+            return {**existing, "replayed": True}
+        execution = connection.execute(
+            """
+            SELECT * FROM airline_operational_executions
+            WHERE execution_id = %s AND run_id = %s AND world_id = %s
+            """,
+            (execution_id, run_id, world_id),
+        ).fetchone()
+        if execution is None:
+            raise KeyError("Unknown operational execution for this recovery run")
+        world = load_world(connection, world_id)
+        facts: list[dict[str, Any]] = []
+        for action in execution["actions"]:
+            flight = connection.execute(
+                """
+                SELECT flight_id, scheduled_departure, scheduled_arrival,
+                       aircraft_id, status
+                FROM airline_flights WHERE world_id = %s AND flight_id = %s
+                """,
+                (world_id, action["flight_id"]),
+            ).fetchone()
+            matches = False
+            if flight is not None and action["action_type"] == "cancel_flight":
+                matches = flight["status"] == "cancelled"
+            elif flight is not None and action["action_type"] == "retime_flight":
+                matches = (
+                    flight["scheduled_departure"].isoformat() == action["departure"]
+                    and flight["scheduled_arrival"].isoformat() == action["arrival"]
+                )
+            elif flight is not None and action["action_type"] == "reassign_aircraft":
+                matches = flight["aircraft_id"] == action["aircraft_id"]
+            facts.append(
+                {
+                    "actionType": action["action_type"],
+                    "flightId": action["flight_id"],
+                    "matches": matches,
+                }
+            )
+        execution_count = connection.execute(
+            "SELECT count(*) AS count FROM airline_operational_executions WHERE run_id = %s",
+            (run_id,),
+        ).fetchone()
+        assert execution_count is not None
+        facts.append(
+            {
+                "check": "worldRevision",
+                "actual": world["revision"],
+                "expected": execution["applied_world_revision"],
+                "matches": world["revision"] == execution["applied_world_revision"],
+            }
+        )
+        facts.append(
+            {
+                "check": "singleExecution",
+                "actual": execution_count["count"],
+                "expected": 1,
+                "matches": execution_count["count"] == 1,
+            }
+        )
+        valid = all(bool(fact["matches"]) for fact in facts)
+        verification_id = uuid5(execution_id, "authoritative-verification")
+        verification = connection.execute(
+            """
+            INSERT INTO airline_recovery_verifications(
+                verification_id, execution_id, run_id, world_id,
+                world_revision, valid, facts
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (
+                verification_id,
+                execution_id,
+                run_id,
+                world_id,
+                world["revision"],
+                valid,
+                Jsonb(facts),
+            ),
+        ).fetchone()
+        assert verification is not None
+        connection.execute(
+            "UPDATE airline_recovery_runs SET status = %s, updated_at = now() WHERE run_id = %s",
+            ("verified" if valid else "failed", run_id),
+        )
+        _append_event(
+            connection,
+            world_id,
+            "recovery.verified" if valid else "recovery.verification_failed",
+            world["revision"],
+            {
+                "runId": str(run_id),
+                "executionId": str(execution_id),
+                "verificationId": str(verification_id),
+                "valid": valid,
+                "facts": facts,
+            },
+        )
+        return {**verification, "replayed": False}

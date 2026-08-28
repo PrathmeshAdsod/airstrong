@@ -252,10 +252,12 @@ def test_remote_mcp_discovers_and_calls_real_airline_tools(api_world: tuple[str,
 
     assert tool_names == [
         "airline_aircraft_investigation",
+        "airline_apply_recovery",
         "airline_crew_investigation",
         "airline_passenger_investigation",
         "airline_recovery_candidates",
         "airline_solver_bundle",
+        "airline_verify_recovery",
         "airline_world_snapshot",
     ]
     assert payload["worldRevision"] == 1

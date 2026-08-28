@@ -80,3 +80,21 @@ Then run:
 ```
 
 The proof writes only identifiers to `.airstrong/compatibility-state.json`, which is ignored by Git. It never commits model output, sandbox artifacts, credentials, or a generated Python file.
+
+## Live recovery and approval proof
+
+With the airline and TrueForge Docker stacks healthy and the two provider credentials loaded into the shell, trigger the hero scenario in an isolated world and run:
+
+```powershell
+npm run recovery:run -- <world-id>
+```
+
+The command returns only after the real generated artifact has run, the twin has ranked stored candidates, and TrueForge has durably paused `airline_apply_recovery`. Re-running the command with the same world resumes the same run and approval identifiers.
+
+After a human has reviewed the returned action summary, continue that exact tool call:
+
+```powershell
+npm run recovery:decide -- <run-id> approve <decision-idempotency-key>
+```
+
+Use `deny` instead of `approve` to reject it. Approval applies the stored action set once and requires the TrueForge root to call the authoritative verification tool. Refreshes and repeated decision requests return the durable result; they do not create another execution.
