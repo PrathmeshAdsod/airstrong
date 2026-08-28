@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
-from uuid import UUID, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import psycopg
 from psycopg.rows import dict_row
@@ -239,6 +239,10 @@ def _append_event(
         """,
         (world_id, sequence, event_type, world_revision, Jsonb(payload)),
     )
+    connection.execute(
+        "SELECT pg_notify('airline_world_events', %s)",
+        (json.dumps({"worldId": str(world_id), "sequence": sequence}, separators=(",", ":")),),
+    )
     return sequence
 
 
@@ -276,6 +280,36 @@ def create_world(
             {"baselineVersion": baseline.BASELINE_VERSION},
         )
     return selected_world_id
+
+
+def create_world_once(
+    connection: DbConnection,
+    *,
+    idempotency_key: str,
+    display_name: str = "Aliens Airline",
+) -> tuple[UUID, bool]:
+    normalized = idempotency_key.strip()
+    if not 8 <= len(normalized) <= 128:
+        raise ValueError("idempotency_key must contain 8 to 128 characters")
+    world_id = uuid5(NAMESPACE_URL, f"https://airstrong.local/world/{normalized}")
+    with connection.transaction():
+        connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (normalized,))
+        existing = connection.execute(
+            "SELECT world_id FROM airline_world_requests WHERE idempotency_key = %s",
+            (normalized,),
+        ).fetchone()
+        if existing is not None:
+            return existing["world_id"], True
+        create_world(connection, display_name=display_name, world_id=world_id)
+        connection.execute(
+            "INSERT INTO airline_world_requests(idempotency_key, world_id) VALUES (%s, %s)",
+            (normalized, world_id),
+        )
+        return world_id, False
+
+
+def default_world(connection: DbConnection) -> UUID:
+    return create_world_once(connection, idempotency_key="airstrong-default-world")[0]
 
 
 def _rows(connection: DbConnection, query: str, world_id: UUID) -> list[DbRow]:
@@ -404,6 +438,83 @@ def load_snapshot(connection: DbConnection, world_id: UUID) -> WorldSnapshot:
         itinerary_legs=itinerary_legs,
         disruptions=disruptions,
     )
+
+
+def load_world(connection: DbConnection, world_id: UUID) -> DbRow:
+    world = connection.execute(
+        """
+        SELECT world_id, display_name, baseline_version, simulation_clock, revision,
+               state, created_at, expires_at
+        FROM airline_worlds
+        WHERE world_id = %s
+        """,
+        (world_id,),
+    ).fetchone()
+    if world is None:
+        raise KeyError(f"Unknown world {world_id}")
+    return world
+
+
+def load_impacts(
+    connection: DbConnection,
+    world_id: UUID,
+    *,
+    revision: int | None = None,
+) -> tuple[OperationalImpact, ...]:
+    selected_revision = revision
+    if selected_revision is None:
+        selected_revision = int(load_world(connection, world_id)["revision"])
+    rows = connection.execute(
+        """
+        SELECT entity_type, entity_id, reason, depth, root_disruption_id,
+               source_entity_type, source_entity_id
+        FROM airline_operational_impacts
+        WHERE world_id = %s AND world_revision = %s
+        ORDER BY root_disruption_id, depth, entity_type, entity_id, reason
+        """,
+        (world_id, selected_revision),
+    ).fetchall()
+    return tuple(
+        OperationalImpact(
+            row["entity_type"],
+            row["entity_id"],
+            row["reason"],
+            row["depth"],
+            row["root_disruption_id"],
+            row["source_entity_type"],
+            row["source_entity_id"],
+        )
+        for row in rows
+    )
+
+
+def latest_recovery_batch(connection: DbConnection, world_id: UUID) -> DbRow | None:
+    batch = connection.execute(
+        """
+        SELECT batch_id, world_id, world_revision, snapshot_hash, artifact_hash,
+               ranking_version, created_at
+        FROM airline_recovery_batches
+        WHERE world_id = %s
+        ORDER BY created_at DESC, batch_id DESC
+        LIMIT 1
+        """,
+        (world_id,),
+    ).fetchone()
+    if batch is None:
+        return None
+    candidates = connection.execute(
+        """
+        SELECT c.candidate_id, c.strategy_parameters, c.actions, c.solver_version,
+               c.solver_status, c.objective_value, e.simulator_version, e.valid,
+               e.metrics, e.violations, e.rank, e.recommended
+        FROM airline_recovery_candidates c
+        JOIN airline_candidate_evaluations e USING (candidate_id)
+        WHERE c.batch_id = %s
+        ORDER BY e.rank NULLS LAST, c.candidate_id
+        """,
+        (batch["batch_id"],),
+    ).fetchall()
+    return {**batch, "candidates": list(candidates)}
 
 
 def _persist_impacts(

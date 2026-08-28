@@ -24,3 +24,5 @@ See [SETUP.md](SETUP.md) for local requirements and [docs/architecture.md](docs/
 The sponsor compatibility proof is deliberately separate from the airline domain. It verifies the real provider path without introducing recovery candidates, expected outcomes, or production fallbacks.
 
 The airline domain currently seeds a small, coherent Aliens Airline operating day. The hero mutation writes a BOM capacity restriction and one aircraft unavailability to PostgreSQL, then recalculates affected rotations, crew, and passenger itineraries from that state. See [docs/domain-assumptions.md](docs/domain-assumptions.md) for the public grounding and explicit simplifications.
+
+The same authoritative service exposes data-backed REST routes, durable SSE replay, and read-only investigation tools over Streamable HTTP MCP. Its container remains separate from the Airstrong runtime and TrueForge.

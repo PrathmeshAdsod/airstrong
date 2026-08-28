@@ -1,0 +1,46 @@
+name: airstrong-airline-local
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_DB: airstrong
+      POSTGRES_PASSWORD: local-airstrong-only
+      POSTGRES_USER: airstrong
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - airstrong-airline-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airstrong -d airstrong"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  airline:
+    build:
+      context: ./services/airline
+    environment:
+      AIRSTRONG_DATABASE_URL: postgresql://airstrong:local-airstrong-only@postgres:5432/airstrong
+      HOST: 0.0.0.0
+      PORT: 4200
+    ports:
+      - "127.0.0.1:4200:4200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/health', timeout=2)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+volumes:
+  airstrong-airline-postgres:
