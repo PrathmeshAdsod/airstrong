@@ -38,3 +38,42 @@ jobs:
       - working-directory: services/compatibility-mcp
         run: uv run python -m compileall -q src
       - run: docker compose -f docker-compose.compatibility.yml config --quiet
+
+  airline-domain:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env:
+          POSTGRES_DB: airstrong_test
+          POSTGRES_PASSWORD: airstrong_test
+          POSTGRES_USER: airstrong
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U airstrong -d airstrong_test"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      AIRSTRONG_TEST_DATABASE_URL: postgresql://airstrong:airstrong_test@127.0.0.1:5432/airstrong_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.27"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - working-directory: services/airline
+        run: uv sync --frozen
+      - working-directory: services/airline
+        run: uv run pytest
+      - working-directory: services/airline
+        run: uv run ruff check src tests
+      - working-directory: services/airline
+        run: uv run ruff format --check src tests
+      - working-directory: services/airline
+        run: uv run mypy src
+      - working-directory: services/airline
+        run: uv run python -m compileall -q src

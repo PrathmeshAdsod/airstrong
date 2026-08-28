@@ -28,6 +28,22 @@ npm test
 npm run build
 ```
 
+Run the authoritative airline domain checks against PostgreSQL:
+
+```powershell
+docker compose -f docker-compose.compatibility.yml up -d postgres
+Set-Location services/airline
+$env:UV_LINK_MODE = "copy"
+$env:AIRSTRONG_TEST_DATABASE_URL = "postgresql://airstrong:local-airstrong-only@127.0.0.1:5433/airstrong"
+uv sync --frozen
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy src
+uv run pytest
+```
+
+The integration tests create isolated worlds, perform the real hero mutation, verify database-sensitive dependency propagation, replay requests with the same idempotency key, reset the world, and remove their test worlds.
+
 Secrets will be documented when their integrations land. Do not commit `.env` files, model keys, Daytona keys, database URLs, or generated run artifacts.
 
 ## Live sponsor-stack compatibility gate
