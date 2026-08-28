@@ -1091,6 +1091,28 @@ def recovery_run(connection: DbConnection, run_id: UUID) -> DbRow:
     return row
 
 
+def recovery_runs_for_world(
+    connection: DbConnection,
+    world_id: UUID,
+    *,
+    limit: int = 20,
+) -> list[DbRow]:
+    if not 1 <= limit <= 100:
+        raise ValueError("recovery run limit must be between 1 and 100")
+    load_world(connection, world_id)
+    rows = connection.execute(
+        """
+        SELECT run_id
+        FROM airline_recovery_runs
+        WHERE world_id = %s
+        ORDER BY created_at DESC, run_id DESC
+        LIMIT %s
+        """,
+        (world_id, limit),
+    ).fetchall()
+    return [recovery_run(connection, row["run_id"]) for row in rows]
+
+
 def link_recovery_investigation_turn(
     connection: DbConnection,
     run_id: UUID,

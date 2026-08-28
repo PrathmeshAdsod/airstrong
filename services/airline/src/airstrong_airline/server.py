@@ -53,6 +53,7 @@ from .views import (
     passenger_investigation,
     public_value,
     recovery_batch_view,
+    recovery_runs_view,
     snapshot_view,
     world_view,
 )
@@ -63,6 +64,7 @@ READ_ONLY = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
+EVENT_CATCHUP_SECONDS = 15
 CONSEQUENTIAL = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=True,
@@ -298,8 +300,14 @@ async def get_recovery(request: Request) -> JSONResponse:
         return _error_response(error)
 
 
-@mcp.custom_route("/api/worlds/{world_id}/recovery/runs", methods=["POST"])
+@mcp.custom_route("/api/worlds/{world_id}/recovery/runs", methods=["GET", "POST"])
 async def post_recovery_run(request: Request) -> JSONResponse:
+    if request.method == "GET":
+        try:
+            runs = _with_database(recovery_runs_view, request.path_params["world_id"])
+            return JSONResponse({"runs": runs})
+        except Exception as error:
+            return _error_response(error)
     if not _authorized_runtime(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
@@ -551,6 +559,20 @@ def _sse_event(event: dict[str, Any]) -> str:
     return f"id: {event['sequence']}\nevent: {event['eventType']}\ndata: {data}\n\n"
 
 
+def _event_headers(request: Request) -> dict[str, str]:
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    origin = request.headers.get("origin")
+    allowed_origins = {
+        value.strip()
+        for value in os.getenv("AIRSTRONG_WEB_ORIGINS", "http://localhost:3000").split(",")
+        if value.strip()
+    }
+    if origin in allowed_origins:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Vary"] = "Origin"
+    return headers
+
+
 async def _async_events_after(
     connection: psycopg.AsyncConnection[DbRow],
     world_id: UUID,
@@ -592,20 +614,26 @@ async def _event_stream(world_id: UUID, after: int, *, follow: bool) -> AsyncIte
             yield _sse_event(event)
         if not follow:
             return
+        # Flush the response immediately even when the durable cursor is current.
+        # Without an initial frame, browsers remain in CONNECTING until the first
+        # notification or keepalive interval elapses.
+        yield ": connected\n\n"
         while True:
-            received = False
-            async for notification in connection.notifies(timeout=15, stop_after=1):
-                received = True
+            async for notification in connection.notifies(
+                timeout=EVENT_CATCHUP_SECONDS,
+                stop_after=1,
+            ):
                 try:
                     notice = json.loads(notification.payload)
                 except json.JSONDecodeError:
                     continue
                 if notice.get("worldId") != str(world_id):
                     continue
-                for event in await _async_events_after(connection, world_id, cursor):
-                    cursor = event["sequence"]
-                    yield _sse_event(event)
-            if not received:
+            pending = await _async_events_after(connection, world_id, cursor)
+            for event in pending:
+                cursor = event["sequence"]
+                yield _sse_event(event)
+            if not pending:
                 yield ": keepalive\n\n"
 
 
@@ -635,12 +663,12 @@ async def get_events(request: Request) -> Response:
                 return StreamingResponse(
                     iter(_sse_event(event) for event in replay),
                     media_type="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                    headers=_event_headers(request),
                 )
         return StreamingResponse(
             _event_stream(world_id, after, follow=True),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers=_event_headers(request),
         )
     except Exception as error:
         return _error_response(error)
