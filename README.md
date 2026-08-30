@@ -96,6 +96,10 @@ Continue with the runtime and web startup in [SETUP.md](SETUP.md). That guide al
 
 The repository is split into substantive pull requests for foundation, authoritative state, twin/ranking, APIs/events, TrueForge recovery, safety/execution, product UI, release hardening, and deployment fixes. CodeAnt, now part of Qodo's review workflow, reviewed the pull requests before merge; the public comments record the commit and review completion. GitHub Actions run application, airline-domain, and compatibility-MCP gates, and Vercel reports deployment status.
 
+## Qodo Code Review Evidence
+
+Qodo/CodeAnt was used throughout the substantive pull requests, with fixes and follow-up reviews for valid findings. [PR #5](https://github.com/PrathmeshAdsod/airstrong/pull/5) is the representative example. Qodo found that generated artifact hashes could be reused across execution lineages with incorrect provenance. We fixed this with execution-specific artifact lineage, stronger snapshot and revision locking and validation, added tests, and requested a follow-up review. The complete [merged pull request history](https://github.com/PrathmeshAdsod/airstrong/pulls?q=is%3Apr+is%3Amerged) preserves the broader review trail.
+
 Release validation on 30 August 2026 completed two consecutive production hero runs. Both reached a real TrueForge approval pause, applied one approved execution, survived browser refresh, and passed authoritative verification. The Railway stop/redeploy drill then restored the same world, both run records, and both TrueForge session IDs from persistent storage.
 
 No provider credential, `.env` file, local database, generated run artifact, browser dump, or temporary log belongs in this repository.
