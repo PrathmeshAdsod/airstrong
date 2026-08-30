@@ -1,45 +1,93 @@
 # Airstrong setup
 
-## Requirements
+This guide reproduces the local development stack and the approved production topology. Commands use PowerShell on Windows with Docker Desktop running Linux containers.
 
+## Prerequisites
+
+- Git
 - Node.js 24.x and npm 11.x
-- Python 3.12 and uv 0.11.27
-- Docker Desktop using Linux containers
-- a Google Gemini API key authorized for the configured Flash-Lite model
+- Python 3.12
+- uv 0.11.27
+- Docker Desktop with Linux containers and Docker Compose
+- a Google Gemini API key authorized for the model in `infra/trueforge/model-catalog.yaml`
 - a Daytona API key
+- Railway CLI and Vercel CLI for production deployment only
 
-Copy `.env.example` to the ignored `.env.compatibility.local` file and set only:
+Check the main tools:
 
 ```powershell
-GEMINI_API_KEY=...
-DAYTONA_API_KEY=...
+node --version
+npm --version
+python --version
+uv --version
+docker version
+docker compose version
 ```
 
-Do not place credentials in `NEXT_PUBLIC_*` variables or commit any `.env` file.
-
-## Local services
-
-Install the Node workspaces:
+## Clone and install
 
 ```powershell
+git clone https://github.com/PrathmeshAdsod/airstrong.git
+Set-Location airstrong
 npm ci
 ```
 
-Start the authoritative airline service and its PostgreSQL database:
+Create the ignored provider file:
+
+```powershell
+Copy-Item .env.example .env.compatibility.local
+```
+
+Set only these values in `.env.compatibility.local`:
+
+```dotenv
+GEMINI_API_KEY=replace-with-your-key
+DAYTONA_API_KEY=replace-with-your-key
+```
+
+Never put secrets in `NEXT_PUBLIC_*` variables. Never commit an `.env` file.
+
+## Start the authoritative airline world
+
+Build and start PostgreSQL and the airline service:
 
 ```powershell
 docker compose -f docker-compose.airline.yml up --build -d
+docker compose -f docker-compose.airline.yml ps
 ```
 
-Start the Linux TrueForge compatibility stack with PostgreSQL, Redis, and the isolated MCP probe:
+The airline startup applies its versioned migrations and creates the default Aliens Airline world once. Verify it:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:4200/health
+Invoke-RestMethod http://127.0.0.1:4200/api/worlds/default
+```
+
+The local database is available at `127.0.0.1:5434`. Its credentials are development-only values from `docker-compose.airline.yml`.
+
+## Start TrueForge and prove the sponsor stack
+
+Run the Linux compatibility proof:
 
 ```powershell
 .\scripts\run-sponsor-compatibility.ps1
 ```
 
-That proof uses real TrueForge, the configured Gemini model, MCP discovery/calls, exactly three dynamic subagents, runtime-generated Python, Daytona Code Mode, a genuine tool approval pause, durable event resume, service restart, and stored-session verification. It writes only non-secret identifiers to the ignored `.airstrong/compatibility-state.json` file.
+This starts TrueForge 0.1.4, PostgreSQL, Redis, and an isolated compatibility MCP. It then exercises the configured Gemini model, real MCP discovery/calls, exactly three dynamic subagents, runtime-generated Python, TrueForge Code Mode, Daytona, a real tool approval pause, durable event replay, service restart, and session persistence.
 
-Start the recovery runtime after loading the two provider credentials into the process environment:
+The proof fails closed. It never substitutes a fixture or static result. It writes only non-secret identifiers to the ignored `.airstrong/compatibility-state.json` file.
+
+Verify TrueForge:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8790/healthz
+```
+
+Native Windows startup is not the supported path. TrueForge 0.1.4 has a Windows ESM path issue; use the pinned Linux container instead of patching the dependency.
+
+## Start the recovery runtime
+
+Load `GEMINI_API_KEY` and `DAYTONA_API_KEY` from the ignored file into the current PowerShell process. Then set the non-secret local endpoints and shared development token:
 
 ```powershell
 $env:AIRSTRONG_RUNTIME_TOKEN = "local-runtime-token-only"
@@ -49,37 +97,61 @@ $env:TRUEFORGE_BASE_URL = "http://127.0.0.1:8790"
 npm run dev:runtime
 ```
 
-In another terminal, start the web app:
+The runtime health endpoint is `http://127.0.0.1:4300/health`.
+
+## Start the web application
+
+In another terminal:
 
 ```powershell
 npm run dev
 ```
 
-Open `http://localhost:3000`. The service health endpoints are:
+Open `http://localhost:3000`. Use:
 
-- airline: `http://127.0.0.1:4200/health`
-- runtime: `http://127.0.0.1:4300/health`
-- TrueForge: `http://127.0.0.1:8790/healthz`
+- `/live` for the current network and SSE state;
+- `/runs` for durable recovery lineage;
+- `/data` for authoritative operational records;
+- `/simulations` to start or reset the hero scenario.
 
-## Real recovery flow
+## Trigger, approve, reset, and resume
 
-Use the Simulations page to trigger the hero scenario and follow the run. The browser uses stable idempotency keys, so refresh does not trigger another scenario, run, approval, or execution.
+The browser stores stable idempotency keys. Refreshing does not create another scenario, run, approval, or execution.
 
-The same flow is available from the runtime commands:
+The same recovery flow is available from the runtime commands:
 
 ```powershell
 npm run recovery:run -- <world-id>
 npm run recovery:decide -- <run-id> approve <decision-idempotency-key>
 ```
 
-Use `deny` instead of `approve` to reject the stored plan. The approval command continues the exact persisted TrueForge tool call. Replays return the existing terminal result.
+Use `deny` instead of `approve` to reject the exact stored plan. The decision continues the persisted TrueForge tool call. Replaying the same key returns the existing result.
 
-## Checks
+To reset the synthetic world through REST:
 
 ```powershell
+$world = Invoke-RestMethod http://127.0.0.1:4200/api/worlds/default
+$resetKey = [guid]::NewGuid().ToString()
+Invoke-RestMethod "http://127.0.0.1:4200/api/worlds/$($world.worldId)/reset" `
+  -Method Post `
+  -Headers @{ "Idempotency-Key" = $resetKey }
+```
+
+Reset is a real database mutation. Historical run records remain available for audit.
+
+## Test the repository
+
+Run the Node checks from the repository root:
+
+```powershell
+npm run format:check
 npm run check
 npm run build
+```
 
+With `docker-compose.airline.yml` running, test the airline service:
+
+```powershell
 Set-Location services/airline
 $env:UV_LINK_MODE = "copy"
 $env:AIRSTRONG_TEST_DATABASE_URL = "postgresql://airstrong:local-airstrong-only@127.0.0.1:5434/airstrong"
@@ -88,85 +160,132 @@ uv run pytest
 uv run ruff check .
 uv run ruff format --check src tests
 uv run mypy src
+Set-Location ../..
 ```
 
-The airline integration tests create isolated worlds, mutate the actual database, exercise REST/MCP/SSE, validate cursor resume and missed-notification catch-up, execute and verify stored actions, replay idempotency keys, and remove their test worlds.
+The integration suite creates isolated worlds, mutates PostgreSQL, exercises REST/MCP/SSE, verifies event cursor catch-up, evaluates generated candidates, enforces approval, executes stored actions, checks idempotency, and removes its test worlds.
 
-Run the same representative agent recovery more than once before changing the configured production model:
+Before changing the production model, run more than one representative real trial:
 
 ```powershell
 npm run model:evaluate -- 3
 ```
 
-Each trial creates an isolated synthetic world, executes the real three-subagent/generated-code/Daytona/twin path, confirms that no operational write occurs at the approval pause, and denies the plan. Trial starts are spaced to respect the verified development RPM limit. Results are printed for private development review and are not written to the repository.
+Each trial creates an isolated synthetic world and runs the real three-subagent, generated-code, Daytona, twin, and approval path. It confirms no operational write happens at the pause and denies the stored plan. Results are printed for private development review and are not committed.
 
-## Approved deployment
+## Production topology
 
-The release topology remains separate:
+The approved topology is fixed:
 
 1. Next.js on Vercel Hobby.
-2. Airline service, agent runtime, and TrueForge as separate Railway services.
-3. Railway PostgreSQL for airline and TrueForge durability.
+2. `airline`, `trueforge`, and `agent-runtime` as three separate Railway services.
+3. Railway PostgreSQL for authoritative airline state and TrueForge sessions.
 4. Railway Redis for TrueForge coordination.
 5. Daytona for short-lived generated-code sandboxes.
 6. Gemini for the root and exactly three investigation subagents.
 
-### Railway
+Do not combine services, expose TrueForge, replace PostgreSQL/Redis, or force a static export for cost alone.
 
-Create one Railway project with PostgreSQL and Redis, then connect the public GitHub repository to three services:
+## Deploy the five Railway resources
 
-| Service         | Source/build                                                     | Public network | Health path |
-| --------------- | ---------------------------------------------------------------- | -------------- | ----------- |
-| `airline`       | root directory `/services/airline`                               | yes            | `/health`   |
-| `trueforge`     | root directory `/infra/trueforge`                                | no             | `/healthz`  |
-| `agent-runtime` | repository root, Dockerfile `/services/agent-runtime/Dockerfile` | yes            | `/health`   |
+Authenticate and create one project:
 
-Use Railway private networking between services. Keep one replica for judging and do not enable Serverless/App Sleeping until the actual TrueForge, SSE, and database connection behavior has passed a cold-start test. Railway documents that outbound traffic and persistent database connections can prevent sleeping and that the first wake request may return 502.
+```powershell
+railway login
+railway init --name airstrong --workspace <workspace-id> --json
+railway add --database postgres --json
+railway add --database redis --json
+railway add --service airline --json
+railway add --service trueforge --json
+railway add --service agent-runtime --json
+```
 
-Required variables by service:
+Keep one replica for each service. Leave App Sleeping off until TrueForge session continuity, SSE, and database connections pass a measured cold-start test.
+
+### Railway variables
+
+Use Railway reference variables for private dependencies.
 
 **airline**
 
-- `AIRSTRONG_DATABASE_URL`: Railway PostgreSQL connection URL
-- `AIRSTRONG_RUNTIME_TOKEN`: long random secret shared only with the runtime
-- `AIRSTRONG_WEB_ORIGINS`: final Vercel production origin
-- `HOST=0.0.0.0`
+```text
+AIRSTRONG_DATABASE_URL=${{Postgres.DATABASE_URL}}
+AIRSTRONG_RUNTIME_TOKEN=<long-random-secret-shared-with-runtime>
+AIRSTRONG_WEB_ORIGINS=https://<vercel-production-domain>
+HOST=0.0.0.0
+PORT=4200
+```
 
 **trueforge**
 
-- `STANDALONE=false`
-- Railway PostgreSQL `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`
-- Railway Redis `REDIS_URL`
-- `MODEL_CATALOG_PATH=/app/catalog/model-catalog.yaml`
-- `SANDBOX_CATALOG_PATH=/app/catalog/sandbox-catalog.yaml`
-- `HOST=0.0.0.0`
-- `PUBLIC_BASE_URL`: the TrueForge private service URL
+```text
+STANDALONE=false
+POSTGRES_HOST=${{Postgres.PGHOST}}
+POSTGRES_PORT=${{Postgres.PGPORT}}
+POSTGRES_USER=${{Postgres.PGUSER}}
+POSTGRES_PASSWORD=${{Postgres.PGPASSWORD}}
+POSTGRES_DB=${{Postgres.PGDATABASE}}
+REDIS_URL=${{Redis.REDIS_URL}}
+MODEL_CATALOG_PATH=/app/catalog/model-catalog.yaml
+SANDBOX_CATALOG_PATH=/app/catalog/sandbox-catalog.yaml
+HOST=0.0.0.0
+PORT=8790
+PUBLIC_BASE_URL=http://trueforge.railway.internal:8790
+```
 
 **agent-runtime**
 
-- `AIRSTRONG_AIRLINE_BASE_URL`: airline private service URL
-- `AIRSTRONG_AIRLINE_MCP_URL`: airline private service URL plus `/mcp`
-- `AIRSTRONG_RUNTIME_TOKEN`: the same secret as the airline service
-- `TRUEFORGE_BASE_URL`: TrueForge private service URL
-- `GEMINI_API_KEY`
-- `DAYTONA_API_KEY`
-- `AIRSTRONG_WEB_ORIGINS`: final Vercel production origin
+```text
+AIRSTRONG_AIRLINE_BASE_URL=http://airline.railway.internal:4200
+AIRSTRONG_AIRLINE_MCP_URL=http://airline.railway.internal:4200/mcp
+AIRSTRONG_RUNTIME_TOKEN=<same-secret-as-airline>
+TRUEFORGE_BASE_URL=http://trueforge.railway.internal:8790
+GEMINI_API_KEY=<secret>
+DAYTONA_API_KEY=<secret>
+AIRSTRONG_WEB_ORIGINS=https://<vercel-production-domain>
+PORT=4300
+RAILWAY_DOCKERFILE_PATH=services/agent-runtime/Dockerfile
+```
 
-PostgreSQL and Redis remain separate infrastructure services. Do not replace them, expose TrueForge publicly, or combine the three application processes to save a small amount of credit without a reviewed architecture change.
+Use `railway variable set <KEY> --stdin --skip-deploys` for secrets so values do not appear in shell history. Do not print `railway variable list --json`; it includes raw values.
 
-### Vercel
+### Deploy application sources
 
-Import the repository as one Vercel project. The checked-in `vercel.json` selects only `apps/web` as the Vercel service and routes public traffic to it with an explicit catch-all rewrite. It does not force a static export.
+The production-verified CLI deployment is:
 
-Set these server-side production variables:
+```powershell
+railway up services/airline --path-as-root --service airline --environment production --detach
+railway up infra/trueforge --path-as-root --service trueforge --environment production --detach
+railway up --service agent-runtime --environment production --detach
+```
 
-- `AIRSTRONG_AIRLINE_BASE_URL`: public Railway airline URL
-- `AIRSTRONG_RUNTIME_BASE_URL`: public Railway runtime URL
-- `NEXT_PUBLIC_AIRSTRONG_EVENTS_BASE_URL`: public Railway airline URL so browser SSE does not consume a long-lived Vercel function
+The equivalent GitHub configuration uses `/services/airline` as the airline root, `/infra/trueforge` as the TrueForge root, and the repository root plus `/services/agent-runtime/Dockerfile` for the runtime.
 
-Set `NEXT_PUBLIC_GITHUB_URL=https://github.com/PrathmeshAdsod/airstrong`. After Vercel assigns the production URL, add that exact origin to `AIRSTRONG_WEB_ORIGINS` on the airline and runtime services.
+Generate public domains only for airline and runtime:
 
-### Release smoke check
+```powershell
+railway domain --service airline --port 4200 --json
+railway domain --service agent-runtime --port 4300 --json
+```
+
+TrueForge, PostgreSQL, and Redis must have no public domain.
+
+## Deploy Vercel
+
+Link the repository to a Vercel project. `vercel.json` selects `apps/web` and routes public traffic to that single web service without using static export.
+
+Set these production variables:
+
+```text
+AIRSTRONG_AIRLINE_BASE_URL=https://<airline-public-domain>
+AIRSTRONG_RUNTIME_BASE_URL=https://<runtime-public-domain>
+NEXT_PUBLIC_AIRSTRONG_EVENTS_BASE_URL=https://<airline-public-domain>
+NEXT_PUBLIC_GITHUB_URL=https://github.com/PrathmeshAdsod/airstrong
+```
+
+Redeploy after changing `NEXT_PUBLIC_*` values because they are embedded in the client build.
+
+## Production smoke check
 
 ```powershell
 $env:AIRSTRONG_WEB_URL = "https://<vercel-production-domain>"
@@ -175,6 +294,102 @@ $env:AIRSTRONG_RUNTIME_BASE_URL = "https://<runtime-public-domain>"
 npm run release:smoke
 ```
 
-The smoke check is read-only. It verifies the web app, both public health endpoints, authoritative world/snapshot identity, ALN flight records, durable run history, and SSE replay content type.
+The read-only smoke verifies the web app, both public health endpoints, authoritative world/snapshot identity, `ALN-####` flight records, durable runs, and SSE replay content type.
 
-Railway's current trial is a one-time $5 credit for up to 30 days, followed by a Free plan with $1 monthly credit. Measure actual service usage. If the approved runtime cannot remain reliable inside that allowance, report the minimum expected charge before enabling a paid plan; do not degrade or fake the product.
+Then run the hero twice. For each run verify:
+
+- exactly three TrueForge subagents and one stored session;
+- a runtime-generated artifact and Daytona sandbox lineage;
+- three stored solver candidates, with factual twin results;
+- no world write before approval;
+- the approval tool is paused with exact stored actions;
+- one approved execution and a higher world revision;
+- authoritative verification is valid;
+- replaying start and approval keys does not execute twice;
+- browser refresh restores the same run and stage.
+
+## Railway cost controls
+
+Railway Hobby includes the first $5 of workspace resource usage. It is still usage-based, so inspect both workspace and service totals:
+
+```powershell
+railway usage --workspace <workspace-id> --json
+railway usage projects --project <project-id> --json
+```
+
+Set the native $5 compute email alert and disable Railway Agent spend:
+
+```powershell
+railway usage limit set --target workspace --soft 5 --workspace <workspace-id> --json
+railway usage limit set --target agent --hard 0 --workspace <workspace-id> --json
+railway usage limit status --workspace <workspace-id> --json
+```
+
+Do not configure Railway Agent, increase limits, or upgrade plans automatically. Keep Daytona auto-stop at 5 minutes, auto-archive at 30 minutes, auto-delete at 120 minutes, and judging concurrency low.
+
+## Tested Railway pause and resume
+
+Removing an active deployment stops its compute without deleting the service, variables, domain, project, or volume. Do not use `railway service delete`, `railway project delete`, `railway volume delete`, or Wipe Volume.
+
+Stop in this order so no writer outlives its dependencies:
+
+```powershell
+railway down --service agent-runtime --environment production --yes
+railway down --service airline --environment production --yes
+railway down --service trueforge --environment production --yes
+railway down --service Redis --environment production --yes
+railway down --service Postgres --environment production --yes
+```
+
+If a repeated command reports `No deployments found`, that service is already stopped. Confirm all deployment IDs are empty and both volumes remain `Ready`:
+
+```powershell
+railway service list --json
+railway volume list --json
+```
+
+Restart in dependency order, waiting for `SUCCESS` after each command:
+
+```powershell
+railway redeploy --service Postgres --environment production --from-source --yes --json
+railway redeploy --service Redis --environment production --from-source --yes --json
+railway redeploy --service trueforge --environment production --from-source --yes --json
+railway redeploy --service airline --environment production --from-source --yes --json
+railway redeploy --service agent-runtime --environment production --from-source --yes --json
+```
+
+After restart, run `npm run release:smoke` and confirm the previous world revision, run records, TrueForge session IDs, and verification records are still present. This procedure was exercised against the production project on 30 August 2026 with both PostgreSQL and Redis volumes preserved.
+
+## Troubleshooting
+
+**TrueForge fails on native Windows**
+
+Use `infra/trueforge/Dockerfile`. Do not patch TrueForge to work around the Windows ESM path issue.
+
+**Runtime health is OK but recovery fails immediately**
+
+Check the private `AIRSTRONG_AIRLINE_BASE_URL`, MCP URL, TrueForge URL, shared runtime token, and provider credentials. Inspect service logs without printing variables.
+
+**A run becomes stale**
+
+The world revision changed after the snapshot or approval. This is intentional. Reset or recompute from the current world; never force the old plan.
+
+**Generated code fails after the bounded repair**
+
+The run must end in a factual failed state. There is no production fixture fallback.
+
+**No valid candidate exists**
+
+The run must report that result. Do not bypass hard constraints or fabricate a plan.
+
+**The browser stream reconnects**
+
+The client resumes from its last durable event sequence. Verify the airline domain is reachable and that the exact Vercel origin is present in `AIRSTRONG_WEB_ORIGINS`.
+
+**Vercel builds but public pages return 404**
+
+Keep the top-level `/(.*)` rewrite in `vercel.json`; Vercel Services remain internal until the selected web service is exposed by that route.
+
+**Railway usage values differ briefly between workspace and project views**
+
+Usage aggregation can update at different times. Record both outputs with their billing-period timestamps and recheck before making a cost claim.
